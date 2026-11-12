@@ -51,12 +51,6 @@ val vimoNativeCacheDir: File = run {
     if (!xdg.isNullOrBlank()) File(xdg, "vimo-native") else File(gradle.gradleUserHomeDir, "vimo-native")
 }
 
-/** The SHA-256 of a file. */
-fun sha256(file: File): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest(file.readBytes())
-        .joinToString("") { "%02x".format(it) }
-
 val downloadVimoNative by tasks.registering {
     group = "build"
     description = "Downloads the Vimo native libraries from the core release."
@@ -81,7 +75,7 @@ val downloadVimoNative by tasks.registering {
 
         if (local) {
             // Build the libraries from a local checkout of the core.
-            logger.lifecycle("Building the native libraries from $coreDir")
+            println("Building the native libraries from $coreDir")
             val jniLibs = File(outputDir, "jniLibs")
             jniLibs.mkdirs()
             val command = listOf(
@@ -111,7 +105,7 @@ val downloadVimoNative by tasks.registering {
 
         if (!cached.exists() || !checksum.exists()) {
             cacheDir.mkdirs()
-            logger.lifecycle("Downloading $artifact")
+            println("Downloading $artifact")
             try {
                 URL("$baseUrl/$artifact").openStream().use { input ->
                     cached.outputStream().use { output -> input.copyTo(output) }
@@ -131,7 +125,9 @@ val downloadVimoNative by tasks.registering {
 
         // The checksum that was published next to the artifact must match it.
         val expected = checksum.readText().trim().split(" ")[0].lowercase()
-        val actual = sha256(cached)
+        val actual = MessageDigest.getInstance("SHA-256")
+            .digest(cached.readBytes())
+            .joinToString("") { "%02x".format(it) }
         check(expected == actual) {
             "the downloaded native artifact does not match its published checksum"
         }
@@ -156,7 +152,7 @@ val downloadVimoNative by tasks.registering {
                 }
             }
         }
-        logger.lifecycle("Unpacked the native libraries into $outputDir")
+        println("Unpacked the native libraries into $outputDir")
     }
 }
 
