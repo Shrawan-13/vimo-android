@@ -192,7 +192,7 @@ pub extern "system" fn Java_com_teamshryne_vimo_VimoCore_nativePollEvent(
         JString::from(JObject::null())
     } else {
         let bytes = unsafe {
-            std::slice::from_raw_parts(event.message as *const u8, event.message_len as usize)
+            std::slice::from_raw_parts(event.message, event.message_len as usize)
         };
         let text = String::from_utf8_lossy(bytes);
         match env.new_string(text.as_ref()) {
