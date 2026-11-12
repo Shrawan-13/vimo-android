@@ -16,8 +16,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Split
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -82,7 +82,7 @@ fun Inspector(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     OutlinedButton(onClick = onSplit) {
-                        Icon(Icons.Filled.Split, contentDescription = null, Modifier.size(16.dp))
+                        Icon(Icons.Filled.ContentCut, contentDescription = null, Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Split")
                     }

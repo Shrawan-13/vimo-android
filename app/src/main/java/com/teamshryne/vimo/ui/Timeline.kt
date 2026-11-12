@@ -1,6 +1,7 @@
 package com.teamshryne.vimo.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -57,15 +58,16 @@ private val TrimHandleWidth = 18.dp
  */
 private sealed interface Drag {
     /** Nothing is being dragged. */
-    val Idle : Drag
+    data object Idle : Drag
 
     /** A clip is being moved to a new start time. */
     data class Moving(val clipId: Int, val trackIndex: Int, val startNs: Long) : Drag
 
-    /** A clip is being trimmed. */
+    /** A clip is being trimmed at one of its edges. */
     data class Trimming(
         val clipId: Int,
         val trackIndex: Int,
+        val edge: Edge,
         val startNs: Long,
         val endNs: Long,
     ) : Drag
@@ -84,11 +86,11 @@ fun Timeline(
     positionNs: Long,
     selectedClipId: Int?,
     modifier: Modifier = Modifier,
-    onSelectClip: (Int?) -> Unit = {},
-    onMoveClip: (clipId: Int, newStartNs: Long) -> Unit = {},
-    onTrimClip: (clipId: Int, newStartNs: Long, newEndNs: Long) -> Unit = {},
-    onSeek: (Long) -> Unit = {},
-    onZoom: (Float) -> Unit = {},
+    onSelectClip: (Int?) -> Unit = { _ -> },
+    onMoveClip: (clipId: Int, newStartNs: Long) -> Unit = { _, _ -> },
+    onTrimClip: (clipId: Int, newStartNs: Long, newEndNs: Long) -> Unit = { _, _, _ -> },
+    onSeek: (Long) -> Unit = { _ -> },
+    onZoom: (Float) -> Unit = { _ -> },
 ) {
     var pixelsPerSecond by remember { mutableFloatStateOf(80f) }
     var scrollNs by remember { mutableStateOf(0L) }
@@ -137,30 +139,29 @@ fun Timeline(
                     )
                 }
                 .pointerInput(project, pixelsPerSecond, scrollNs) {
-                    androidx.compose.foundation.gestures.detectDragGestures(
+                    detectDragGestures(
                         onDragStart = { offset ->
-                            if (offset.x < headerPx) {
-                                // Dragging the ruler scrubs.
-                                drag = Drag.Idle
-                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs, metrics))
-                                return@detectDragGestures
+                            val clip = if (offset.x < headerPx) {
+                                null
+                            } else {
+                                clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)
                             }
-                            val clip = clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)
                             if (clip == null) {
+                                // Dragging the ruler (or empty space) scrubs.
                                 drag = Drag.Idle
                                 onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs, metrics))
-                                return@detectDragGestures
-                            }
-                            val (trackIndex, model) = clip
-                            val edge = edgeAt(model, offset.x, pixelsPerSecond, scrollNs, metrics)
-                            drag = when (edge) {
-                                Edge.START -> Drag.Trimming(
-                                    model.id, trackIndex, model.startNs, model.endNs,
-                                )
-                                Edge.END -> Drag.Trimming(
-                                    model.id, trackIndex, model.startNs, model.endNs,
-                                )
-                                Edge.NONE -> Drag.Moving(model.id, trackIndex, model.startNs)
+                            } else {
+                                val (trackIndex, model) = clip
+                                val edge =
+                                    edgeAt(model, offset.x, pixelsPerSecond, scrollNs, metrics)
+                                drag = when (edge) {
+                                    Edge.START, Edge.END -> Drag.Trimming(
+                                        model.id, trackIndex, edge,
+                                        model.startNs, model.endNs,
+                                    )
+                                    Edge.NONE ->
+                                        Drag.Moving(model.id, trackIndex, model.startNs)
+                                }
                             }
                         },
                         onDrag = { change, dragAmount ->
@@ -178,8 +179,16 @@ fun Timeline(
                                 }
                                 is Drag.Trimming -> {
                                     val deltaNs = (dragAmount.x / pixelsPerSecond * 1e9).roundToLong()
-                                    val newStart = (current.startNs + deltaNs).coerceAtLeast(0L)
-                                    val newEnd = max(current.endNs + deltaNs, newStart + 1_000_000L)
+                                    val newStart = if (current.edge == Edge.START) {
+                                        (current.startNs + deltaNs).coerceAtLeast(0L)
+                                    } else {
+                                        current.startNs
+                                    }
+                                    val newEnd = if (current.edge == Edge.END) {
+                                        max(current.endNs + deltaNs, newStart + 1_000_000L)
+                                    } else {
+                                        current.endNs
+                                    }
                                     drag = current.copy(startNs = newStart, endNs = newEnd)
                                     onTrimClip(current.clipId, newStart, newEnd)
                                 }

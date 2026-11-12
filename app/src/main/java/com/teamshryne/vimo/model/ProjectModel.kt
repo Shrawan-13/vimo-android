@@ -143,9 +143,23 @@ object SnapshotParser {
         }
     }
 
+    /**
+     * Count the keyframes of an effect.
+     *
+     * The animation tracks are an array of objects, each with an array of
+     * keys, so the count is the sum of their lengths.
+     */
+    private fun countKeys(tracks: JSONArray?): Int {
+        if (tracks == null) return 0
+        var total = 0
+        for (i in 0 until tracks.length()) {
+            total += tracks.optJSONObject(i)?.optJSONArray("keys")?.length() ?: 0
+        }
+        return total
+    }
+
     /** Parse the effects of a clip out of the snapshot. */
-    fun parseEffects(clip: JSONObject): List<EffectModel> =
-        clip.optJSONArray("effects")?.let { effects ->
+    fun parseEffects(clip: JSONObject): List<EffectModel> =        clip.optJSONArray("effects")?.let { effects ->
             buildList {
                 for (i in 0 until effects.length()) {
                     val effect = effects.optJSONObject(i) ?: continue
@@ -169,8 +183,7 @@ object SnapshotParser {
                                     }
                                 }
                             } ?: emptyList(),
-                            keyframeCount = effect.optJSONArray("keyframes")
-                                ?.sumOf { it.optJSONArray("keys")?.length() ?: 0 } ?: 0,
+                            keyframeCount = countKeys(effect.optJSONArray("keyframes")),
                         ),
                     )
                 }
