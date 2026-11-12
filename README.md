@@ -15,26 +15,7 @@ exactly one place, and lets the app and the core move independently.
 | `app` | The Kotlin / Compose application. |
 | `app/src/main/java/.../ui` | The editor: the timeline, the preview, the inspector. |
 | `app/src/main/java/.../model` | The parsed view of the engine's snapshot. |
-
-## How the pieces fit together
-
-```text
-  Kotlin UI  ──commands──►  vimo-jni  ──►  vimo-core (the engine)
-      ▲                        │
-      └──────events────────────┘
-                                   │
-                 vimo-android ────┤  MediaCodec · Oboe · EGL · Perfetto
-                                   ▼
-                            the device
-```
-
-* The **UI** never queries the engine. It sends commands and receives events;
-  when it needs to redraw the timeline it asks for a JSON snapshot.
-* The **engine** owns the project, the render graph, the clock and the export
-  pipeline. It knows nothing about Android.
-* The **platform layer** owns everything device specific. The core reaches it
-  through a handful of traits (`Decoder`, `Encoder`, `GlApi`, `AudioOutput`,
-  `TraceSink`, `DeviceProbe`, `SurfaceSource`).
+| `app/build.gradle.kts` | The build, including the download of the native libraries. |
 
 ## Building
 
@@ -43,44 +24,58 @@ exactly one place, and lets the app and the core move independently.
 ```
 
 The build downloads `vimo-native-<version>-android.zip` from the core
-repository's releases. It is cached in `~/.gradle/vimo-native`, so only the
-first build pays for it.
+repository's releases. It is cached under `$XDG_CACHE_HOME/vimo-native` (or
+`~/.gradle/vimo-native` when `XDG_CACHE_HOME` is not set), so only the first
+build pays for it.
 
 The version is pinned in `gradle.properties`:
 
 ```properties
 vimo.native.version=0.1.0
+vimo.core.repo=TeamShryne/vimo-core
+```
+
+The checksum that is published next to the artifact is always verified. For
+extra safety, pin the artifact's own checksum:
+
+```properties
+vimo.native.sha256=<the sha256 of the zip>
 ```
 
 If the artifact cannot be downloaded (before the first release, for example),
-the CI workflow can build it from the core instead:
+the libraries can be built from a local checkout of the core instead:
+
+```sh
+./gradlew -Pvimo.native.local=true :app:assembleDebug
+```
+
+The CI workflow can do the same:
 
 ```sh
 gh workflow run android.yml -f build_native=true
 ```
 
-## CI
+## The editor
 
-`.github/workflows/android.yml` has two jobs:
+The layout adapts to the space it has:
 
-* **rust** — clones the core, formats, lints, tests it, and builds the
-  Android libraries for `arm64-v8a` and `x86_64` with `cargo ndk`.
-* **android** — builds the debug APK (which runs the Rust build again through
-  Gradle) and uploads it as an artefact.
+* **Wide** (a tablet, or a phone in landscape) — the preview and the
+  inspector sit side by side above the timeline.
+* **Narrow** (a phone in portrait) — the preview is on top and the timeline
+  takes the bottom third.
 
-The Android libraries are built by CI rather than committed, so the repository
-stays free of binaries.
+The timeline is drawn on a single canvas rather than composed from views: a
+project can have hundreds of clips and the timeline has to stay at 60 fps
+while the user scrubs.
 
-## The native bindings are declared by hand
-
-`crates/vimo-android/src/ffi.rs` declares EGL, OpenGL ES 3 and `MediaCodec`
-itself instead of generating bindings from the NDK headers. That is
-deliberate: it means the crate **compiles on a desktop**, so the Rust code is
-type checked by CI even when the Android build is not running.
-
-```sh
-cargo build   # works on a desktop; the Android paths are compiled but not run
-```
+| Gesture | What it does |
+|---------|--------------|
+| Tap a clip | Select it |
+| Drag a clip | Move it on the timeline |
+| Drag a clip's edge | Trim it (the picture stays in sync) |
+| Drag the ruler | Scrub |
+| Pinch | Zoom the timeline |
+| Two fingers | Scroll the timeline |
 
 ## CI
 

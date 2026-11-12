@@ -15,7 +15,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -27,7 +26,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.teamshryne.vimo.model.ClipModel
@@ -98,8 +96,16 @@ fun Timeline(
     val measurer = rememberTextMeasurer()
 
     BoxWithConstraints(modifier = modifier) {
-        val widthPx = with(androidx.compose.ui.platform.LocalDensity.current) { maxWidth.toPx() }
-        val headerPx = with(androidx.compose.ui.platform.LocalDensity.current) { HeaderWidth.toPx() }
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val headerPx = with(density) { HeaderWidth.toPx() }
+        val rulerPx = with(density) { RulerHeight.toPx() }
+        val trackPx = with(density) { TrackHeight.toPx() }
+        val metrics = TimelineMetrics(
+            headerPx = headerPx,
+            rulerPx = rulerPx,
+            trackPx = trackPx,
+            trimHandlePx = with(density) { TrimHandleWidth.toPx() },
+        )
 
         // Pinch to zoom, two fingers to scroll.
         Box(
@@ -121,12 +127,12 @@ fun Timeline(
                     detectTapGestures(
                         onTap = { offset ->
                             if (offset.x < headerPx) return@detectTapGestures
-                            val hit = hitTest(project, offset, pixelsPerSecond, scrollNs)
+                            val hit = hitTest(project, offset, pixelsPerSecond, scrollNs, metrics)
                             onSelectClip(hit)
                         },
                         onLongPress = { offset ->
                             if (offset.x < headerPx) return@detectTapGestures
-                            onSelectClip(hitTest(project, offset, pixelsPerSecond, scrollNs))
+                            onSelectClip(hitTest(project, offset, pixelsPerSecond, scrollNs, metrics))
                         },
                     )
                 }
@@ -136,17 +142,17 @@ fun Timeline(
                             if (offset.x < headerPx) {
                                 // Dragging the ruler scrubs.
                                 drag = Drag.Idle
-                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs))
+                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs, metrics))
                                 return@detectDragGestures
                             }
-                            val clip = clipAt(project, offset, pixelsPerSecond, scrollNs)
+                            val clip = clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)
                             if (clip == null) {
                                 drag = Drag.Idle
-                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs))
+                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs, metrics))
                                 return@detectDragGestures
                             }
                             val (trackIndex, model) = clip
-                            val edge = edgeAt(model, offset.x, pixelsPerSecond, scrollNs)
+                            val edge = edgeAt(model, offset.x, pixelsPerSecond, scrollNs, metrics)
                             drag = when (edge) {
                                 Edge.START -> Drag.Trimming(
                                     model.id, trackIndex, model.startNs, model.endNs,
@@ -162,7 +168,7 @@ fun Timeline(
                             when (val current = drag) {
                                 Drag.Idle -> {
                                     // Scrubbing the ruler.
-                                    onSeek(timeAt(change.position.x, pixelsPerSecond, scrollNs))
+                                    onSeek(timeAt(change.position.x, pixelsPerSecond, scrollNs, metrics))
                                 }
                                 is Drag.Moving -> {
                                     val deltaNs = (dragAmount.x / pixelsPerSecond * 1e9).roundToLong()
@@ -193,6 +199,7 @@ fun Timeline(
                     scrollNs = scrollNs,
                     drag = drag,
                     measurer = measurer,
+                    metrics = metrics,
                 )
             }
         }
@@ -202,21 +209,26 @@ fun Timeline(
 /** Which edge of a clip a touch is close to. */
 private enum class Edge { START, END, NONE }
 
+/** The pixel metrics of the timeline, computed once per composition. */
+private class TimelineMetrics(
+    val headerPx: Float,
+    val rulerPx: Float,
+    val trackPx: Float,
+    val trimHandlePx: Float,
+)
+
 /** The clip under a touch, with the index of its track. */
 private fun clipAt(
     project: ProjectModel,
     offset: Offset,
     pixelsPerSecond: Float,
     scrollNs: Long,
+    metrics: TimelineMetrics,
 ): Pair<Int, ClipModel>? {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val headerPx = with(density) { HeaderWidth.toPx() }
-    val rulerPx = with(density) { RulerHeight.toPx() }
-    val trackPx = with(density) { TrackHeight.toPx() }
-    if (offset.x < headerPx || offset.y < rulerPx) return null
-    val trackIndex = ((offset.y - rulerPx) / trackPx).toInt()
+    if (offset.x < metrics.headerPx || offset.y < metrics.rulerPx) return null
+    val trackIndex = ((offset.y - metrics.rulerPx) / metrics.trackPx).toInt()
     val track = project.tracks.getOrNull(trackIndex) ?: return null
-    val timeNs = timeAt(offset.x, pixelsPerSecond, scrollNs)
+    val timeNs = timeAt(offset.x, pixelsPerSecond, scrollNs, metrics)
     val clip = track.clips.firstOrNull { timeNs >= it.startNs && timeNs < it.endNs }
     return clip?.let { trackIndex to it }
 }
@@ -227,7 +239,8 @@ private fun hitTest(
     offset: Offset,
     pixelsPerSecond: Float,
     scrollNs: Long,
-): Int? = clipAt(project, offset, pixelsPerSecond, scrollNs)?.second?.id
+    metrics: TimelineMetrics,
+): Int? = clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)?.second?.id
 
 /** Which edge of a clip a touch is close to. */
 private fun edgeAt(
@@ -235,32 +248,37 @@ private fun edgeAt(
     x: Float,
     pixelsPerSecond: Float,
     scrollNs: Long,
+    metrics: TimelineMetrics,
 ): Edge {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val handlePx = with(density) { TrimHandleWidth.toPx() }
-    val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs)
-    val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs)
+    val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs, metrics)
+    val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs, metrics)
     return when {
-        abs(x - startX) <= handlePx -> Edge.START
-        abs(x - endX) <= handlePx -> Edge.END
+        abs(x - startX) <= metrics.trimHandlePx -> Edge.START
+        abs(x - endX) <= metrics.trimHandlePx -> Edge.END
         else -> Edge.NONE
     }
 }
 
 /** The time at a horizontal position. */
-private fun timeAt(x: Float, pixelsPerSecond: Float, scrollNs: Long): Long {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val headerPx = with(density) { HeaderWidth.toPx() }
-    val seconds = (x - headerPx) / pixelsPerSecond
+private fun timeAt(
+    x: Float,
+    pixelsPerSecond: Float,
+    scrollNs: Long,
+    metrics: TimelineMetrics,
+): Long {
+    val seconds = (x - metrics.headerPx) / pixelsPerSecond
     return scrollNs + (seconds * 1e9).roundToLong()
 }
 
 /** The horizontal position of a time. */
-private fun timeToX(timeNs: Long, pixelsPerSecond: Float, scrollNs: Long): Float {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val headerPx = with(density) { HeaderWidth.toPx() }
+private fun timeToX(
+    timeNs: Long,
+    pixelsPerSecond: Float,
+    scrollNs: Long,
+    metrics: TimelineMetrics,
+): Float {
     val seconds = (timeNs - scrollNs) / 1e9f
-    return headerPx + seconds * pixelsPerSecond
+    return metrics.headerPx + seconds * pixelsPerSecond
 }
 
 /** Draw the whole timeline. */
@@ -272,11 +290,12 @@ private fun DrawScope.drawTimeline(
     scrollNs: Long,
     drag: Drag,
     measurer: TextMeasurer,
+    metrics: TimelineMetrics,
 ) {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val headerPx = with(density) { HeaderWidth.toPx() }
-    val rulerPx = with(density) { RulerHeight.toPx() }
-    val trackPx = with(density) { TrackHeight.toPx() }
+    // A DrawScope is a Density, so the conversions below use its own density.
+    val headerPx = metrics.headerPx
+    val rulerPx = metrics.rulerPx
+    val trackPx = metrics.trackPx
 
     drawRect(VimoColors.Background, size = size)
 
@@ -294,7 +313,7 @@ private fun DrawScope.drawTimeline(
     var tick = firstTick
     while (true) {
         val timeNs = tick * step
-        val x = timeToX(timeNs, pixelsPerSecond, scrollNs)
+        val x = timeToX(timeNs, pixelsPerSecond, scrollNs, metrics)
         if (x > size.width) break
         if (x >= headerPx) {
             drawLine(
@@ -326,8 +345,8 @@ private fun DrawScope.drawTimeline(
 
         // The clips.
         track.clips.forEach { clip ->
-            val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs)
-            val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs)
+            val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs, metrics)
+            val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs, metrics)
             if (endX < headerPx || startX > size.width) return@forEach
 
             val left = max(startX, headerPx)
@@ -437,7 +456,7 @@ private fun DrawScope.drawTimeline(
     )
 
     // --- the playhead ----------------------------------------------------
-    val playheadX = timeToX(positionNs, pixelsPerSecond, scrollNs)
+    val playheadX = timeToX(positionNs, pixelsPerSecond, scrollNs, metrics)
     if (playheadX in headerPx..size.width) {
         drawLine(
             VimoColors.Accent,
