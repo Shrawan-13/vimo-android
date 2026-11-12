@@ -1,4 +1,6 @@
-import java.io.ByteArrayOutputStream
+import java.net.URL
+import java.security.MessageDigest
+import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -35,6 +37,8 @@ val vimoAbis: List<String> =
 
 /** Where the native libraries are unpacked. */
 val vimoNativeDir = layout.buildDirectory.dir("vimo-native")
+val vimoNativeAssets = vimoNativeDir.map { it.dir("assets") }
+val vimoNativeJniLibs = vimoNativeDir.map { it.dir("jniLibs") }
 
 /**
  * The download cache.
@@ -49,7 +53,7 @@ val vimoNativeCacheDir: File = run {
 
 /** The SHA-256 of a file. */
 fun sha256(file: File): String =
-    java.security.MessageDigest.getInstance("SHA-256")
+    MessageDigest.getInstance("SHA-256")
         .digest(file.readBytes())
         .joinToString("") { "%02x".format(it) }
 
@@ -109,10 +113,10 @@ val downloadVimoNative by tasks.registering {
             cacheDir.mkdirs()
             logger.lifecycle("Downloading $artifact")
             try {
-                java.net.URL("$baseUrl/$artifact").openStream().use { input ->
+                URL("$baseUrl/$artifact").openStream().use { input ->
                     cached.outputStream().use { output -> input.copyTo(output) }
                 }
-                java.net.URL("$baseUrl/$artifact.sha256").openStream().use { input ->
+                URL("$baseUrl/$artifact.sha256").openStream().use { input ->
                     checksum.outputStream().use { output -> input.copyTo(output) }
                 }
             } catch (error: Exception) {
@@ -139,7 +143,7 @@ val downloadVimoNative by tasks.registering {
             }
         }
 
-        java.util.zip.ZipFile(cached).use { zip ->
+        ZipFile(cached).use { zip ->
             zip.entries().asSequence().forEach { entry ->
                 val target = File(outputDir, entry.name)
                 if (entry.isDirectory) {
@@ -189,8 +193,11 @@ android {
         compose = true
     }
 
-    // The effect manifest and the shaders come with the native libraries.
-    sourceSets["main"].assets.srcDir(vimoNativeDir.map { it.dir("assets") })
+    sourceSets {
+        // The effect manifest and the shaders come with the native libraries.
+        getByName("main").assets.srcDir(vimoNativeAssets)
+        getByName("main").jniLibs.srcDir(vimoNativeJniLibs)
+    }
 
     packaging {
         jniLibs {
@@ -223,12 +230,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
-tasks.withType<com.android.build.gradle.tasks.MergeSourceSetFolders>().configureEach {
+// The libraries have to be there before they are packaged.
+tasks.named("preBuild").configure {
     dependsOn(downloadVimoNative)
-    jniLibs.srcDir(vimoNativeDir.map { it.dir("jniLibs") })
-}
-
-tasks.withType<com.android.build.gradle.tasks.StripDebugSymbols>().configureEach {
-    // The native libraries are already stripped.
-    keepDebugSymbols += setOf("**/*.so")
 }
