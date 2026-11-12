@@ -1,0 +1,139 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust libraries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the app
+        uses: actions/checkout@v7
+
+      - name: Checkout the core
+        run: |
+          git clone --depth 1 https://github.com/Shrawan-13/vimo-core.git ../vimo
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
+
+      - name: Set up the NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Check the formatting
+        run: cargo fmt --all -- --check
+        working-directory: ../vimo
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: ../vimo
+
+      - name: Test
+        run: cargo test --workspace
+        working-directory: ../vimo
+
+      - name: Build the Android libraries
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t x86_64 \
+            -o ../app/src/main/jniLibs \
+            build --release \
+            -p vimo-jni -p vimo-android
+
+      - name: Upload the libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: vimo-native-libraries
+          path: app/src/main/jniLibs
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: rust
+    steps:
+      - name: Checkout the app
+        uses: actions/checkout@v7
+
+      - name: Checkout the core
+        run: |
+          git clone --depth 1 https://github.com/Shrawan-13/vimo-core.git ../vimo
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+          cache-provider: basic
+
+      - name: Set up the NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
+
+      - name: Build debug APK
+        run: gradle --build-cache --configuration-cache --parallel :app:assembleDebug
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: vimo-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  prune-caches:
+    name: Prune old Actions caches
+    needs: android
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Keep the 15 newest repository caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          mapfile -t stale_ids < <(
+            gh api --paginate "repos/${REPOSITORY}/actions/caches?per_page=100" \
+              --jq '.actions_caches[] | [.id, .created_at] | @tsv' \
+              | sort -k2,2r \
+              | awk 'NR > 15 { print $1 }'
+          )
+          for cache_id in "${stale_ids[@]}"; do
+            gh api --silent --method DELETE "repos/${REPOSITORY}/actions/caches/${cache_id}"
+          done

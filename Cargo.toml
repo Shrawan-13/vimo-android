@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/vimo-android", "crates/vimo-jni"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Vimo Core Team"]
+
+[workspace.dependencies]
+# The core lives in its own repository. It is expected as a sibling checkout
+# (`../vimo`); CI clones it there before building.
+vimo-core = { package = "vimo-ffi", path = "../vimo/crates/vimo-ffi" }
+vimo-foundation = { path = "../vimo/crates/vimo-foundation" }
+vimo-media = { path = "../vimo/crates/vimo-media" }
+vimo-audio = { path = "../vimo/crates/vimo-audio" }
+vimo-render = { path = "../vimo/crates/vimo-render" }
+vimo-gl = { path = "../vimo/crates/vimo-gl" }
+vimo-resources = { path = "../vimo/crates/vimo-resources" }
+vimo-device = { path = "../vimo/crates/vimo-device" }
+vimo-engine = { path = "../vimo/crates/vimo-engine" }
+vimo-project = { path = "../vimo/crates/vimo-project" }
+vimo-manifest = { path = "../vimo/crates/vimo-manifest" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
