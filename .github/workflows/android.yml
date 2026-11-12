@@ -76,7 +76,7 @@ jobs:
         if: ${{ inputs.build_native == true }}
         uses: actions/checkout@v7
         with:
-          repository: TeamShryne/vimo-core
+          repository: Shrawan-13/vimo-core
           path: ../vimo
 
       - name: Set up Rust

@@ -27,7 +27,7 @@ val vimoNativeLocal: Boolean =
     (project.findProperty("vimo.native.local") as String?)?.toBoolean() ?: false
 val vimoCoreDir: String = (project.findProperty("vimo.core.dir") as String?) ?: "../vimo"
 val vimoCoreRepo: String =
-    (project.findProperty("vimo.core.repo") as String?) ?: "TeamShryne/vimo-core"
+    (project.findProperty("vimo.core.repo") as String?) ?: "Shrawan-13/vimo-core"
 val vimoNativeSha256: String =
     (project.findProperty("vimo.native.sha256") as String?) ?: ""
 val vimoAbis: List<String> =

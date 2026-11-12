@@ -32,7 +32,7 @@ The version is pinned in `gradle.properties`:
 
 ```properties
 vimo.native.version=0.1.0
-vimo.core.repo=TeamShryne/vimo-core
+vimo.core.repo=Shrawan-13/vimo-core
 ```
 
 The checksum that is published next to the artifact is always verified. For
