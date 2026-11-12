@@ -127,6 +127,66 @@ object VimoCommand {
     /** Set a clip's transform: `a` = clip, the floats carry the values. */
     const val SET_CLIP_TRANSFORM = 25
 
+    /** Set a clip's volume: `a` = clip, `b` = float bits. */
+    const val SET_CLIP_VOLUME = 26
+
+    /** Set a clip's speed: `a` = clip, `b` = float bits. */
+    const val SET_CLIP_SPEED = 27
+
+    /** Mute or unmute a clip: `a` = clip, `b` = 0 or 1. */
+    const val SET_CLIP_MUTED = 28
+
+    /** Add a track: `a` = the track kind (0 = video, 1 = audio). */
+    const val ADD_TRACK = 29
+
+    /** Remove a track: `a` = track. */
+    const val REMOVE_TRACK = 30
+
+    /** Enable or disable a track: `a` = track, `b` = 0 or 1. */
+    const val SET_TRACK_ENABLED = 31
+
+    /** Mute or unmute a track: `a` = track, `b` = 0 or 1. */
+    const val SET_TRACK_MUTED = 32
+
+    /** Solo a track: `a` = track, `b` = 0 or 1. */
+    const val SET_TRACK_SOLO = 33
+
+    /** Lock or unlock a track: `a` = track, `b` = 0 or 1. */
+    const val SET_TRACK_LOCKED = 34
+
+    /** Set a track's volume: `a` = track, `b` = float bits. */
+    const val SET_TRACK_VOLUME = 35
+
+    /** Add an effect: `a` = the owner kind (0 = clip, 1 = track), `b` = the owner, `c` = the effect type. */
+    const val ADD_EFFECT = 36
+
+    /** Remove an effect: `a` = the owner kind, `b` = the owner, `c` = the effect. */
+    const val REMOVE_EFFECT = 37
+
+    /** Enable or disable an effect: `a` = the effect, `b` = 0 or 1. */
+    const val SET_EFFECT_ENABLED = 38
+
+    /** Add a keyframe: `a` = the effect, `b` = the parameter, `c` = the time. */
+    const val ADD_KEYFRAME = 39
+
+    /** Remove a keyframe: `a` = the effect, `b` = the parameter, `c` = the time. */
+    const val REMOVE_KEYFRAME = 40
+
+    /** Set a keyframe's interpolation: `a` = the effect, `b` = the parameter, `c` = the mode. */
+    const val SET_KEYFRAME_INTERPOLATION = 41
+
+    /** Add a media source: the text is the path, the floats carry the duration. */
+    const val ADD_ASSET = 42
+
+    /** Remove a media source: `a` = the asset. */
+    const val REMOVE_ASSET = 43
+
+    /** Add a transition: `a` = track, `b` = from clip, `c` = to clip. */
+    const val ADD_TRANSITION = 44
+
+    /** Remove a transition: `a` = the transition. */
+    const val REMOVE_TRANSITION = 45
+
     /** Set the project name. */
     const val SET_PROJECT_NAME = 46
 
@@ -141,6 +201,15 @@ object VimoCommand {
 
     /** Recover the newest autosave. */
     const val RECOVER_AUTOSAVE = 50
+
+    /** Loop the playback: `a` = 0 or 1. */
+    const val SET_LOOP = 51
+
+    /** Pause the export. */
+    const val EXPORT_PAUSE = 52
+
+    /** Resume the export. */
+    const val EXPORT_RESUME = 53
 
     /** Ask the engine for a snapshot event. */
     const val REQUEST_SNAPSHOT = 54

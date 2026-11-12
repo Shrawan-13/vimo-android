@@ -257,7 +257,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Move a clip to a new start time. */
     fun moveClip(clipId: Int, newStartNs: Long) {
-        engine.execute(VimoCommand.MOVE_CLIP, a = clipId.toLong(), c = newStartNs)
+        // The track is part of the command: a clip that is moved to another
+        // track changes its place in the project.
+        val track = project.tracks.indexOfFirst { it.clips.any { clip -> clip.id == clipId } }
+        if (track < 0) return
+        engine.execute(
+            VimoCommand.MOVE_CLIP,
+            a = clipId.toLong(),
+            b = track.toLong(),
+            c = newStartNs,
+        )
     }
 
     /** Trim a clip. */
