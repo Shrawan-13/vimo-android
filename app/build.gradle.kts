@@ -74,20 +74,13 @@ val downloadVimoNative by tasks.registering {
         outputDir.mkdirs()
 
         if (local) {
-            // Build the libraries from a local checkout of the core.
+            // Build the libraries from a local checkout of the core, with the
+            // core's own script, so the CI and the local build agree.
             println("Building the native libraries from $coreDir")
-            val jniLibs = File(outputDir, "jniLibs")
-            jniLibs.mkdirs()
-            val command = listOf(
-                "cargo", "ndk",
-                *abis.flatMap { listOf("-t", it) }.toTypedArray(),
-                "-o", jniLibs.absolutePath,
-                "build", "--release", "-p", "vimo-jni",
-                "--manifest-path", File(coreDir, "Cargo.toml").absolutePath,
-            )
-            val builder = ProcessBuilder(command)
-            builder.environment()["VIMO_NATIVE_LIB_DIR"] = jniLibs.absolutePath
-            val process = builder.inheritIO().start()
+            val script = File(coreDir, "scripts/build-native.sh")
+            check(script.exists()) { "there is no build script at $script" }
+            val command = listOf("bash", script.absolutePath, outputDir.absolutePath) + abis
+            val process = ProcessBuilder(command).inheritIO().start()
             check(process.waitFor() == 0) { "the native libraries could not be built" }
 
             // The effect manifest and the shaders travel with the libraries.
