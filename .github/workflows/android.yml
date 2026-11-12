@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_native:
+        description: "Build the native libraries from the core instead of downloading them"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,72 +19,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: Rust libraries
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout the app
-        uses: actions/checkout@v7
-
-      - name: Checkout the core
-        run: |
-          git clone --depth 1 https://github.com/Shrawan-13/vimo-core.git ../vimo
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Install cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
-
-      - name: Set up the NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
-
-      - name: Check the formatting
-        run: cargo fmt --all -- --check
-        working-directory: ../vimo
-
-      - name: Lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
-        working-directory: ../vimo
-
-      - name: Test
-        run: cargo test --workspace
-        working-directory: ../vimo
-
-      - name: Build the Android libraries
-        run: |
-          cargo ndk \
-            -t arm64-v8a \
-            -t x86_64 \
-            -o ../app/src/main/jniLibs \
-            build --release \
-            -p vimo-jni -p vimo-android
-
-      - name: Upload the libraries
-        uses: actions/upload-artifact@v7
-        with:
-          name: vimo-native-libraries
-          path: app/src/main/jniLibs
-          if-no-files-found: error
-          retention-days: 14
-
-  android:
+  build:
     name: Build debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    needs: rust
     steps:
-      - name: Checkout the app
+      - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Checkout the core
-        run: |
-          git clone --depth 1 https://github.com/Shrawan-13/vimo-core.git ../vimo
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -93,16 +39,58 @@ jobs:
           gradle-version: "8.9"
           cache-provider: basic
 
+      # The Gradle user home holds the dependency cache, the build cache and
+      # the downloaded native libraries. Restoring it is what makes the build
+      # fast; it is the single biggest lever in this workflow.
+      - name: Cache the Gradle user home
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/vimo-native
+          key: gradle-home-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-home-${{ runner.os }-
+
+      - name: Cache the build directory
+        uses: actions/cache@v6
+        with:
+          path: app/build
+          key: app-build-${{ runner.os }}-${{ hashFiles('**/*.kt', '**/*.gradle.kts') }}
+          restore-keys: |
+            app-build-${{ runner.os }}-
+
+      # When the native artifact cannot be downloaded (for example before the
+      # first release), it is built from the core instead.
+      - name: Build the native libraries from the core
+        if: ${{ inputs.build_native == true }}
+        uses: actions/checkout@v7
+        with:
+          repository: Shrawan-13/vimo-core
+          path: ../vimo
+
+      - name: Set up Rust
+        if: ${{ inputs.build_native == true }}
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up the NDK
+        if: ${{ inputs.build_native == true }}
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
 
       - name: Install cargo-ndk
+        if: ${{ inputs.build_native == true }}
         uses: taiki-e/install-action@cargo-ndk
 
-      - name: Build debug APK
-        run: gradle --build-cache --configuration-cache --parallel :app:assembleDebug
+      - name: Build the debug APK
+        run: |
+          if [ "${{ inputs.build_native }}" = "true" ]; then
+            cargo ndk -t arm64-v8a -o app/build/vimo-native/jniLibs build --release -p vimo-jni \
+              --manifest-path ../vimo/Cargo.toml
+          fi
+          gradle --build-cache --configuration-cache --parallel :app:assembleDebug
 
       - name: Upload the APK
         uses: actions/upload-artifact@v7
@@ -112,9 +100,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vimo-test-report
+          path: |
+            app/build/reports/
+            app/build/outputs/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
   prune-caches:
     name: Prune old Actions caches
-    needs: android
+    needs: build
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -122,7 +121,9 @@ jobs:
       actions: write
       contents: read
     steps:
-      - name: Keep the 15 newest repository caches
+      # Keep the cache count bounded: the twenty newest are almost always the
+      # useful ones, and an unbounded cache eventually fills the runner's disk.
+      - name: Keep the 20 newest repository caches
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -132,7 +133,7 @@ jobs:
             gh api --paginate "repos/${REPOSITORY}/actions/caches?per_page=100" \
               --jq '.actions_caches[] | [.id, .created_at] | @tsv' \
               | sort -k2,2r \
-              | awk 'NR > 15 { print $1 }'
+              | awk 'NR > 20 { print $1 }'
           )
           for cache_id in "${stale_ids[@]}"; do
             gh api --silent --method DELETE "repos/${REPOSITORY}/actions/caches/${cache_id}"

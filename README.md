@@ -1,15 +1,20 @@
 # Vimo for Android
 
-The Android app and the platform layer for the [Vimo Core](../vimo).
+The Vimo Android application.
 
-The core is a separate, platform independent repository. This repository holds:
+**This repository contains no native code.** The Rust core — including the
+Android platform layer (MediaCodec, Oboe, EGL) — lives in its own repository
+and is published as a GitHub release. The build downloads the release
+artifact, verifies its checksum and unpacks it into the APK.
+
+That keeps this repository small, means the native code is built and tested in
+exactly one place, and lets the app and the core move independently.
 
 | Path | What |
 |------|------|
-| `crates/vimo-android` | The platform layer: EGL + OpenGL ES 3, MediaCodec, Oboe, the device profile, the Perfetto sink and the zero-copy surface path. |
-| `crates/vimo-jni` | The JNI bindings between Kotlin and the core. |
 | `app` | The Kotlin / Compose application. |
-| `app/src/main/cpp` | The Oboe shim (Oboe is C++, so the platform layer reaches it through a small C interface). |
+| `app/src/main/java/.../ui` | The editor: the timeline, the preview, the inspector. |
+| `app/src/main/java/.../model` | The parsed view of the engine's snapshot. |
 
 ## How the pieces fit together
 
@@ -33,20 +38,25 @@ The core is a separate, platform independent repository. This repository holds:
 
 ## Building
 
-The core is expected as a **sibling checkout**:
-
 ```sh
-git clone https://github.com/Shrawan-13/vimo-core.git ../vimo
-cd vimo-android
 ./gradlew :app:assembleDebug
 ```
 
-The Gradle build shells out to `cargo ndk` (see `app/build.gradle.kts`), so
-the NDK and `cargo-ndk` have to be installed:
+The build downloads `vimo-native-<version>-android.zip` from the core
+repository's releases. It is cached in `~/.gradle/vimo-native`, so only the
+first build pays for it.
+
+The version is pinned in `gradle.properties`:
+
+```properties
+vimo.native.version=0.1.0
+```
+
+If the artifact cannot be downloaded (before the first release, for example),
+the CI workflow can build it from the core instead:
 
 ```sh
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64
-cargo install cargo-ndk
+gh workflow run android.yml -f build_native=true
 ```
 
 ## CI
@@ -72,13 +82,27 @@ type checked by CI even when the Android build is not running.
 cargo build   # works on a desktop; the Android paths are compiled but not run
 ```
 
+## CI
+
+`.github/workflows/android.yml` builds the debug APK and uploads it.
+
+The build is fast because the caches are aggressive:
+
+* the Gradle user home (dependencies, the build cache and the downloaded
+  native artifact) is restored as one cache;
+* the build directory is cached separately;
+* the Gradle configuration cache is enabled.
+
+A **prune job** runs after every build and deletes every repository cache
+except the twenty newest, so the cache never grows without bound.
+
 ## What is still missing
 
 * The EGLImage path for the *true* zero-copy decode (`Surface → texture`).
   The decoder already renders into a surface; the missing piece is the
   `EGLImage` binding that turns it into a `GL_TEXTURE_EXTERNAL_OES` texture.
-* The real `MediaCodecList` capability query (the fallback in
-  `vimo_android::device` reports a typical phone).
+* The real `MediaCodecList` capability query (the fallback reports a typical
+  phone).
 * The export encoder and the muxer.
-* The Kotlin timeline UI (the current activity shows the preview surface and
-  the engine's status).
+* Thumbnails in the media bin, and the drag-and-drop of media onto the
+  timeline.

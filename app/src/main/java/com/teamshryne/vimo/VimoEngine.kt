@@ -149,6 +149,21 @@ class VimoEngine(
         execute(VimoCommand.REQUEST_SNAPSHOT)
     }
 
+    /**
+     * Load the effect manifest and the shader sources into the engine.
+     *
+     * The manifest says which effects exist; the shaders implement them. The
+     * core pairs them and checks that the two agree, so a mismatch is found at
+     * start-up rather than on the user's device.
+     *
+     * @return the number of interface mismatches (zero is good).
+     */
+    fun loadEffects(manifestJson: String, shadersJson: String): Int {
+        val current = handle
+        if (current == 0L) return 0
+        return VimoCore.nativeLoadEffects(current, manifestJson, shadersJson)
+    }
+
     /** Release the engine. */
     override fun close() {
         val current = handle

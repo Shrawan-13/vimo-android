@@ -44,4 +44,15 @@ internal object VimoCore {
 
     /** Hand the output surface over to the engine. */
     external fun nativeSetSurface(handle: Long, surface: Any)
+
+    /**
+     * Load the effect manifest and the shader sources.
+     *
+     * @return the number of interface mismatches (zero is good).
+     */
+    external fun nativeLoadEffects(
+        handle: Long,
+        manifest: String,
+        shaders: String,
+    ): Int
 }

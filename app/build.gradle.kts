@@ -6,63 +6,88 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+/**
+ * The native libraries are **not** in this repository.
+ *
+ * They are built by the core repository and published as a GitHub release
+ * asset; the build downloads them, checks their integrity and unpacks them.
+ * That keeps this repository small and means the native code is built and
+ * tested in exactly one place.
+ *
+ * Set `vimo.native.local=true` to build them from a local checkout instead
+ * (useful while working on the core).
+ */
+val vimoNativeVersion: String =
+    (project.findProperty("vimo.native.version") as String?) ?: "0.1.0"
+val vimoNativeLocal: Boolean =
+    (project.findProperty("vimo.native.local") as String?)?.toBoolean() ?: false
 val vimoCoreDir: String = (project.findProperty("vimo.core.dir") as String?) ?: "../vimo"
 val vimoAbis: List<String> =
     ((project.findProperty("vimo.abis") as String?) ?: "arm64-v8a").split(",").map { it.trim() }
 
-/** The directory the Rust libraries are written to. */
-val jniLibsDir = layout.buildDirectory.dir("jniLibs")
+/** Where the downloaded artifact is unpacked. */
+val vimoNativeDir = layout.buildDirectory.dir("vimo-native")
 
-/**
- * Builds the Rust libraries for every Android ABI and copies the resulting
- * shared objects into the APK.
- *
- * `cargo ndk` is used because it sets the linker and the API level correctly
- * for each ABI; the CI workflow installs it with `taiki-e/install-action`.
- */
-val buildRust by tasks.registering(Exec::class) {
+/** The download cache, shared between builds. */
+val vimoNativeCacheDir: File =
+    File(gradle.gradleUserHomeDir, "vimo-native")
+
+val downloadVimoNative by tasks.registering {
     group = "build"
-    description = "Builds the Vimo Rust libraries for Android."
+    description = "Downloads the Vimo native libraries from the core release."
 
-    workingDir = file(vimoCoreDir)
-    val outputDir = jniLibsDir.get().asFile
-    // The Oboe shim is built by CMake into the same directory, so the Rust
-    // linker can find it.
-    val nativeLibDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
-    val profile = if (gradle.startParameter.taskNames.any { it.contains("Release", true) }) {
-        "release"
-    } else {
-        "debug"
-    }
+    val version = vimoNativeVersion
+    val cacheDir = vimoNativeCacheDir
+    val outputDir = vimoNativeDir.get().asFile
 
-    commandLine(
-        "cargo", "ndk",
-        "-t", vimoAbis.joinToString(","),
-        "-o", outputDir.absolutePath,
-        "build", "--profile", profile,
-        "-p", "vimo-jni",
-        "-p", "vimo-android",
-    )
-    environment("CARGO_TERM_COLOR", "always")
-    environment("VIMO_NATIVE_LIB_DIR", nativeLibDir.absolutePath)
-    // The core is a path dependency; keep it out of the Android lock file.
-    environment("CARGO_NET_OFFLINE", "false")
-}
+    inputs.property("version", version)
+    outputs.dir(outputDir)
 
-// The Rust libraries link against the Oboe shim, so CMake has to run first.
-buildRust.configure {
-    dependsOn("configureCMakeDebug[arm64-v8a]")
-}
+    doLast {
+        val artifact = "vimo-native-$version-android.zip"
+        val baseUrl = "https://github.com/Shrawan-13/vimo-core/releases/download/v$version"
+        val cached = File(cacheDir, artifact)
+        val checksum = File(cacheDir, "$artifact.sha256")
 
-tasks.withType<com.android.build.gradle.tasks.MergeSourceSetFolders>().configureEach {
-    dependsOn(buildRust)
-    jniLibs.srcDir(jniLibsDir)
-}
+        if (!cached.exists() || !checksum.exists()) {
+            cacheDir.mkdirs()
+            logger.lifecycle("Downloading $artifact")
+            val url = java.net.URL("$baseUrl/$artifact")
+            url.openStream().use { input ->
+                cached.outputStream().use { output -> input.copyTo(output) }
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(cached.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            checksum.writeText("$digest  $artifact\n")
+        }
 
-tasks.withType<com.android.build.gradle.tasks.StripDebugSymbols>().configureEach {
-    // The Rust libraries are already stripped in release.
-    if (name.contains("Debug")) {
-        keepDebugSymbols += setOf("**/*.so")
+        // Verify the download against the checksum that was published next to
+        // it. A truncated or tampered download must never reach the APK.
+        val expected = checksum.readText().trim().split(" ").first()
+        val actual = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(cached.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        check(expected == actual) {
+            "the downloaded native artifact does not match its checksum"
+        }
+
+        outputDir.deleteRecursively()
+        outputDir.mkdirs()
+        java.util.zip.ZipFile(cached).use { zip ->
+            zip.entries().asSequence().forEach { entry ->
+                val target = File(outputDir, entry.name)
+                if (entry.isDirectory) {
+                    target.mkdirs()
+                } else {
+                    target.parentFile?.mkdirs()
+                    zip.getInputStream(entry).use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+            }
+        }
+        logger.lifecycle("Unpacked the native libraries into $outputDir")
     }
 }
 
@@ -78,24 +103,13 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf("-O2", "-std=c++17")
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     buildFeatures {
         compose = true
-        prefab = true
     }
+
+    sourceSets["main"].assets.srcDir(vimoNativeDir.map { it.dir("assets") })
 
     packaging {
         jniLibs {
@@ -124,7 +138,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    // Oboe is used through prefab, so the CMake build can `find_package(oboe)`.
-    implementation("com.google.oboe:oboe:1.8.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
