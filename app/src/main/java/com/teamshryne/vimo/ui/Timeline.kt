@@ -14,7 +14,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.distanceTo
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -148,7 +147,7 @@ fun Timeline(
                             if (pressed.size >= 2) {
                                 // Two fingers: zoom around the middle of them.
                                 val distance =
-                                    pressed[0].position.distanceTo(pressed[1].position).toFloat()
+                                    (pressed[0].position - pressed[1].position).getDistance()
                                 val center = (pressed[0].position + pressed[1].position) / 2f
                                 if (lastDistance > 1f && distance > 1f) {
                                     val factor = distance / lastDistance
@@ -356,7 +355,7 @@ private fun timeToX(
     scrollPx: Float,
     metrics: TimelineMetrics,
 ): Float {
-    val seconds = (timeNs - scrollPx / pixelsPerSecond * 1e9) / 1e9f
+    val seconds = (timeNs / 1e9f) - (scrollPx / pixelsPerSecond)
     return metrics.headerPx + seconds * pixelsPerSecond - scrollPx
 }
 
