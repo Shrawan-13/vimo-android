@@ -1,6 +1,7 @@
 package com.teamshryne.vimo.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,10 +15,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material3.Button
@@ -34,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.teamshryne.vimo.EditorViewModel
+import com.teamshryne.vimo.model.AssetModel
 import com.teamshryne.vimo.ui.theme.VimoColors
 
 /**
@@ -55,6 +62,8 @@ fun EditorScreen(
     viewModel: EditorViewModel,
     onSurfaceReady: (android.view.Surface) -> Unit,
     modifier: Modifier = Modifier,
+    onBack: () -> Unit = {},
+    onImport: () -> Unit = {},
 ) {
     val project = viewModel.project
     val selected = viewModel.selectedClip()
@@ -68,7 +77,7 @@ fun EditorScreen(
         val wide = maxWidth >= 720.dp
 
         Column(Modifier.fillMaxSize()) {
-            TopBar(viewModel)
+            TopBar(viewModel, onBack, onImport)
 
             if (wide) {
                 Row(
@@ -111,6 +120,14 @@ fun EditorScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+            }
+
+            // The media bin: the files that can be put on the timeline.
+            if (project.assets.isNotEmpty()) {
+                MediaBin(
+                    assets = project.assets,
+                    onAdd = viewModel::addAssetToTimeline,
+                )
             }
 
             // The timeline.
@@ -164,29 +181,33 @@ private fun PreviewColumn(
 
 /** The bar across the top. */
 @Composable
-private fun TopBar(viewModel: EditorViewModel) {
+private fun TopBar(
+    viewModel: EditorViewModel,
+    onBack: () -> Unit,
+    onImport: () -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
             .height(52.dp)
             .background(VimoColors.Surface)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            Icons.Filled.Movie,
-            contentDescription = null,
-            tint = VimoColors.Accent,
-            modifier = Modifier.size(22.dp),
-        )
-        Spacer(Modifier.width(10.dp))
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back to the projects",
+                tint = VimoColors.OnSurface,
+            )
+        }
         Text(
-            viewModel.project.name.ifBlank { "Vimo" },
+            viewModel.project.name.ifBlank { "Untitled" },
             style = MaterialTheme.typography.titleMedium,
             color = VimoColors.OnSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(140.dp),
+            modifier = Modifier.width(120.dp),
         )
         if (viewModel.dirty) {
             Text(
@@ -198,6 +219,13 @@ private fun TopBar(viewModel: EditorViewModel) {
 
         Spacer(Modifier.weight(1f))
 
+        IconButton(onClick = onImport) {
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = "Import media",
+                tint = VimoColors.OnSurface,
+            )
+        }
         IconButton(onClick = viewModel::undo) {
             Icon(
                 Icons.AutoMirrored.Filled.Undo,
@@ -213,7 +241,7 @@ private fun TopBar(viewModel: EditorViewModel) {
             )
         }
 
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
 
         Button(
             onClick = { viewModel.startExport(0) },
@@ -226,6 +254,68 @@ private fun TopBar(viewModel: EditorViewModel) {
             Icon(Icons.Filled.Download, contentDescription = null, Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
             Text("Export", fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/**
+ * The media bin.
+ *
+ * The files that are in the project. Tapping one puts it on the timeline.
+ */
+@Composable
+private fun MediaBin(
+    assets: List<AssetModel>,
+    onAdd: (AssetModel) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(VimoColors.Surface)
+            .padding(vertical = 6.dp),
+    ) {
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(assets, key = { it.id }) { asset ->
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(VimoColors.SurfaceRaised)
+                        .clickable { onAdd(asset) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        if (asset.kind == "audio") Icons.Filled.AudioFile else Icons.Filled.Movie,
+                        contentDescription = null,
+                        tint = if (asset.kind == "audio") {
+                            VimoColors.AccentAudio
+                        } else {
+                            VimoColors.AccentVideo
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            asset.name,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = VimoColors.OnSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.width(120.dp),
+                        )
+                        Text(
+                            formatDuration(asset.durationNs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VimoColors.OnSurfaceMuted,
+                        )
+                    }
+                }
+            }
         }
     }
 }

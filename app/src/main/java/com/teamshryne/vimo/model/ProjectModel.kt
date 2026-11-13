@@ -16,6 +16,7 @@ data class ProjectModel(
     val fps: Float,
     val durationNs: Long,
     val tracks: List<TrackModel>,
+    val assets: List<AssetModel> = emptyList(),
 ) {
     /** The total number of clips. */
     val clipCount: Int get() = tracks.sumOf { it.clips.size }
@@ -25,6 +26,17 @@ data class ProjectModel(
         val EMPTY = ProjectModel("", 1920, 1080, 30f, 0L, emptyList())
     }
 }
+
+/** A piece of media in the project. */
+data class AssetModel(
+    val id: Int,
+    val name: String,
+    val kind: String,
+    val durationNs: Long,
+    val width: Int,
+    val height: Int,
+    val hasAudio: Boolean,
+)
 
 /** A track on the timeline. */
 data class TrackModel(
@@ -96,6 +108,7 @@ object SnapshotParser {
         val fpsNum = meta.optLong("fpsNum", 30L)
         val fpsDen = meta.optLong("fpsDen", 1L).coerceAtLeast(1L)
         val tracks = root.optJSONArray("tracks")?.let { parseTracks(it) } ?: emptyList()
+        val assets = root.optJSONArray("assets")?.let { parseAssets(it) } ?: emptyList()
 
         return ProjectModel(
             name = meta.optString("name", "Untitled"),
@@ -104,7 +117,25 @@ object SnapshotParser {
             fps = fpsNum.toFloat() / fpsDen.toFloat(),
             durationNs = meta.optLong("durationNs", 0L),
             tracks = tracks,
+            assets = assets,
         )
+    }
+
+    private fun parseAssets(array: JSONArray): List<AssetModel> = buildList {
+        for (i in 0 until array.length()) {
+            val asset = array.optJSONObject(i) ?: continue
+            add(
+                AssetModel(
+                    id = asset.optInt("id", i),
+                    name = asset.optString("name", "Media"),
+                    kind = asset.optString("kind", "video"),
+                    durationNs = asset.optLong("durationNs", 0L),
+                    width = asset.optInt("width", 0),
+                    height = asset.optInt("height", 0),
+                    hasAudio = asset.optBoolean("hasAudio", false),
+                ),
+            )
+        }
     }
 
     private fun parseTracks(array: JSONArray): List<TrackModel> = buildList {

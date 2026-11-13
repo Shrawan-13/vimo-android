@@ -55,4 +55,18 @@ internal object VimoCore {
         manifest: String,
         shaders: String,
     ): Int
+
+    /**
+     * List the projects in a directory.
+     *
+     * @return a JSON array with one object per project.
+     */
+    external fun nativeListProjects(dir: String): String
+
+    /**
+     * Delete a project.
+     *
+     * @return `0` on success, a negative status otherwise.
+     */
+    external fun nativeDeleteProject(path: String): Int
 }

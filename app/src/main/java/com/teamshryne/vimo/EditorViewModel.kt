@@ -1,22 +1,44 @@
 package com.teamshryne.vimo
 
 import android.app.Application
+import android.content.ContentResolver
+import android.net.Uri
+import android.provider.MediaMetadataRetriever
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.teamshryne.vimo.model.AssetModel
 import com.teamshryne.vimo.model.ClipModel
 import com.teamshryne.vimo.model.ProjectModel
 import com.teamshryne.vimo.model.SnapshotParser
+import com.teamshryne.vimo.model.TrackKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import org.json.JSONObject
+
+/**
+ * A project on the device.
+ *
+ * @property name the name of the project.
+ * @property path where it is stored.
+ * @property modified when it was last changed, in seconds since the epoch.
+ * @property size how big it is, in bytes.
+ */
+data class ProjectInfo(
+    val name: String,
+    val path: String,
+    val modified: Long,
+    val size: Long,
+)
 
 /** An effect the app can add to a clip. */
 data class EffectDescriptor(
@@ -288,6 +310,28 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         engine.execute(VimoCommand.SPLIT_CLIP, a = clip.id.toLong(), b = positionNs)
     }
 
+    /**
+     * Put a file on the timeline.
+     *
+     * It goes on the first video track, at the end of what is already
+     * there.
+     */
+    fun addAssetToTimeline(asset: AssetModel) {
+        val track = project.tracks.indexOfFirst { it.kind == TrackKind.VIDEO }
+        if (track < 0) {
+            error = "There is no video track yet"
+            return
+        }
+        val start = project.tracks[track].clips.maxOfOrNull { it.endNs } ?: 0L
+        engine.execute(
+            VimoCommand.ADD_CLIP,
+            a = track.toLong(),
+            b = asset.id.toLong(),
+            c = start,
+        )
+        refresh()
+    }
+
     /** Delete the selected clip. */
     fun deleteSelected() {
         val clip = selectedClip() ?: return
@@ -355,6 +399,132 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         engine.saveProject(path)
         dirty = false
         message = "Saved"
+    }
+
+    // --- the projects ------------------------------------------------------
+
+    /** Where the projects are kept. */
+    val projectsDir: File
+        get() = File(getApplication<Application>().filesDir, "projects").also { it.mkdirs() }
+
+    /** Where the imported media is kept. */
+    val mediaDir: File
+        get() = File(getApplication<Application>().filesDir, "media").also { it.mkdirs() }
+
+    /** The projects on the device. */
+    var projects by mutableStateOf<List<ProjectInfo>>(emptyList())
+        private set
+
+    /** Read the list of projects from the disk. */
+    fun refreshProjects() {
+        val json = engine.listProjects(projectsDir.absolutePath)
+        projects = parseProjects(json)
+    }
+
+    /** Make a new, empty project. */
+    fun createProject(name: String) {
+        engine.newProject()
+        engine.execute(VimoCommand.SET_PROJECT_NAME, text = name)
+        refresh()
+        saveProject()
+        refreshProjects()
+    }
+
+    /** Open a project. */
+    fun openProject(project: ProjectInfo) {
+        engine.loadProject(project.path)
+        refresh()
+    }
+
+    /** Delete a project. */
+    fun deleteProject(project: ProjectInfo) {
+        engine.deleteProject(project.path)
+        refreshProjects()
+        message = "Deleted"
+    }
+
+    /** Save the project under its own name. */
+    fun saveProject() {
+        val name = project.name.ifBlank { "Untitled" }
+        val file = File(projectsDir, "$name.vimo")
+        engine.saveProject(file.absolutePath)
+        dirty = false
+        refreshProjects()
+    }
+
+    /** Parse the list of projects. */
+    private fun parseProjects(json: String): List<ProjectInfo> = runCatching {
+        val array = org.json.JSONArray(json)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            ProjectInfo(
+                name = item.optString("name", "Untitled"),
+                path = item.optString("path"),
+                modified = item.optLong("modified", 0L),
+                size = item.optLong("size", 0L),
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    // --- the media ---------------------------------------------------------
+
+    /**
+     * Import the file behind a content URI into the project.
+     *
+     * The file is copied into the app's own storage, so that the project
+     * does not depend on a permission that can be taken away later.
+     */
+    fun importMedia(uri: Uri) {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        val name = queryName(resolver, uri) ?: "media"
+        val durationNs = queryDuration(resolver, uri)
+        val target = File(mediaDir, name)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                resolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("the file could not be opened")
+            } catch (failure: Exception) {
+                withContext(Dispatchers.Main) {
+                    error = "The file could not be imported: ${failure.message}"
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                engine.execute(
+                    VimoCommand.ADD_ASSET,
+                    text = target.absolutePath,
+                    floats = floatArrayOf(durationNs / 1e9),
+                )
+                refresh()
+                message = "Imported $name"
+            }
+        }
+    }
+
+    /** The name of the file behind a content URI. */
+    private fun queryName(resolver: ContentResolver, uri: Uri): String? =
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+
+    /** How long the media behind a content URI is, in nanoseconds. */
+    private fun queryDuration(resolver: ContentResolver, uri: Uri): Long = try {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(resolver.openFileDescriptor(uri, "r")!!.fileDescriptor)
+            val millis = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            millis * 1_000_000L
+        } finally {
+            retriever.release()
+        }
+    } catch (_: Exception) {
+        0L
     }
 
     /** Load a project. */

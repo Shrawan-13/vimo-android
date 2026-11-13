@@ -213,6 +213,9 @@ object VimoCommand {
 
     /** Ask the engine for a snapshot event. */
     const val REQUEST_SNAPSHOT = 54
+
+    /** Start a new, empty project. */
+    const val NEW_PROJECT = 55
 }
 
 /** The status codes returned by the core. */

@@ -164,6 +164,24 @@ class VimoEngine(
         return VimoCore.nativeLoadEffects(current, manifestJson, shadersJson)
     }
 
+    /**
+     * The projects in a directory, as JSON.
+     */
+    fun listProjects(dir: String): String = VimoCore.nativeListProjects(dir)
+
+    /**
+     * Delete a project.
+     *
+     * @return true when it is gone.
+     */
+    fun deleteProject(path: String): Boolean =
+        VimoCore.nativeDeleteProject(path) == VimoStatus.OK
+
+    /** Start a new, empty project. */
+    fun newProject() {
+        execute(VimoCommand.NEW_PROJECT)
+    }
+
     /** Release the engine. */
     override fun close() {
         val current = handle

@@ -1,9 +1,8 @@
 package com.teamshryne.vimo.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,40 +37,47 @@ import kotlin.math.max
 import kotlin.math.roundToLong
 
 /** The height of the ruler. */
-private val RulerHeight = 28.dp
+private val RulerHeight = 30.dp
 
 /** The height of a track row. */
-private val TrackHeight = 62.dp
+private val TrackHeight = 64.dp
 
 /** The width of the track header column. */
-private val HeaderWidth = 104.dp
+private val HeaderWidth = 108.dp
 
 /** How close to a clip edge a touch has to be to trim it. */
-private val TrimHandleWidth = 18.dp
+private val TrimHandleWidth = 20.dp
+
+/** How wide the playhead's handle is. */
+private val PlayheadHandleWidth = 28.dp
+
+/** The smallest and the largest zoom, in pixels per second. */
+private const val MinPixelsPerSecond = 12f
+private const val MaxPixelsPerSecond = 900f
 
 /**
- * What the timeline is currently doing.
+ * What a gesture on the timeline is doing.
  *
- * The gesture state lives here rather than in the view model so that a drag
- * never round-trips through the native engine: the clip follows the finger and
- * the engine is only told where it landed.
+ * The gesture is decided once, when the finger has moved far enough to be
+ * a drag and not a tap. That is what keeps the playhead still while the
+ * timeline is scrolled.
  */
-private sealed interface Drag {
-    /** Nothing is being dragged. */
-    data object Idle : Drag
+private enum class Gesture {
+    /** The timeline is being scrolled. */
+    SCROLL,
 
-    /** A clip is being moved to a new start time. */
-    data class Moving(val clipId: Int, val trackIndex: Int, val startNs: Long) : Drag
+    /** The playhead is being moved. */
+    PLAYHEAD,
 
-    /** A clip is being trimmed at one of its edges. */
-    data class Trimming(
-        val clipId: Int,
-        val trackIndex: Int,
-        val edge: Edge,
-        val startNs: Long,
-        val endNs: Long,
-    ) : Drag
+    /** A clip is being moved. */
+    MOVE_CLIP,
+
+    /** A clip is being trimmed. */
+    TRIM_CLIP,
 }
+
+/** Which edge of a clip a touch is close to. */
+private enum class Edge { START, END, NONE }
 
 /**
  * The editing timeline.
@@ -79,6 +85,17 @@ private sealed interface Drag {
  * Everything is drawn on a single canvas rather than composed from views: a
  * project can have hundreds of clips, and the timeline has to stay at 60 fps
  * while the user scrubs.
+ *
+ * The gestures are:
+ *
+ * | Gesture | What it does |
+ * |---------|--------------|
+ * | Drag on a clip | Move it |
+ * | Drag the edge of a clip | Trim it |
+ * | Drag the playhead's handle | Move the playhead |
+ * | Drag anywhere else | Scroll the timeline |
+ * | Pinch | Zoom the timeline |
+ * | Tap a clip | Select it |
  */
 @Composable
 fun Timeline(
@@ -92,111 +109,153 @@ fun Timeline(
     onSeek: (Long) -> Unit = { _ -> },
     onZoom: (Float) -> Unit = { _ -> },
 ) {
-    var pixelsPerSecond by remember { mutableFloatStateOf(80f) }
-    var scrollNs by remember { mutableStateOf(0L) }
-    var drag by remember { mutableStateOf<Drag>(Drag.Idle) }
+    var pixelsPerSecond by remember { mutableFloatStateOf(72f) }
+    // The horizontal scroll, in pixels.
+    var scrollPx by remember { mutableFloatStateOf(0f) }
     val measurer = rememberTextMeasurer()
 
     BoxWithConstraints(modifier = modifier) {
         val density = androidx.compose.ui.platform.LocalDensity.current
-        val headerPx = with(density) { HeaderWidth.toPx() }
-        val rulerPx = with(density) { RulerHeight.toPx() }
-        val trackPx = with(density) { TrackHeight.toPx() }
         val metrics = TimelineMetrics(
-            headerPx = headerPx,
-            rulerPx = rulerPx,
-            trackPx = trackPx,
+            headerPx = with(density) { HeaderWidth.toPx() },
+            rulerPx = with(density) { RulerHeight.toPx() },
+            trackPx = with(density) { TrackHeight.toPx() },
             trimHandlePx = with(density) { TrimHandleWidth.toPx() },
+            playheadPx = with(density) { PlayheadHandleWidth.toPx() },
         )
 
-        // Pinch to zoom, two fingers to scroll.
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        if (zoom != 1f) {
-                            pixelsPerSecond = (pixelsPerSecond * zoom).coerceIn(4f, 2000f)
-                            onZoom(pixelsPerSecond)
+                .pointerInput(project, pixelsPerSecond, scrollPx, selectedClipId) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var gesture: Gesture? = null
+                        var last = down.position
+                        var lastDistance = 0f
+                        var edge = Edge.NONE
+                        var clipId = 0
+                        var clipStart = 0L
+                        var clipEnd = 0L
+                        var moved = false
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.isEmpty()) break
+
+                            if (pressed.size >= 2) {
+                                // Two fingers: zoom around the middle of them.
+                                val distance = pressed[0].position.distanceTo(pressed[1].position)
+                                val center = (pressed[0].position + pressed[1].position) / 2f
+                                if (lastDistance > 1f && distance > 1f) {
+                                    val factor = distance / lastDistance
+                                    val target = (pixelsPerSecond * factor)
+                                        .coerceIn(MinPixelsPerSecond, MaxPixelsPerSecond)
+                                    // Keep the time under the fingers where it is.
+                                    val timeAtCenter = timeAt(center.x, pixelsPerSecond, scrollPx, metrics)
+                                    pixelsPerSecond = target
+                                    scrollPx = scrollFor(
+                                        timeAtCenter, target, center.x, metrics,
+                                    )
+                                    onZoom(target)
+                                }
+                                lastDistance = distance
+                                gesture = Gesture.SCROLL
+                                event.changes.forEach { it.consume() }
+                                continue
+                            }
+
+                            val change = pressed.first()
+                            val delta = change.position - last
+                            if (gesture == null) {
+                                // Wait for the touch slop before deciding what
+                                // the gesture means.
+                                if (delta.getDistance() < viewConfiguration.touchSlop) {
+                                    last = change.position
+                                    continue
+                                }
+                                // The touch slop has been crossed: decide what
+                                // the gesture means, from where it started.
+                                val hit = hitTest(
+                                    project, positionNs, down.position,
+                                    pixelsPerSecond, scrollPx, metrics,
+                                )
+                                gesture = when {
+                                    hit == null -> Gesture.SCROLL
+                                    hit.isPlayhead -> Gesture.PLAYHEAD
+                                    hit.edge != Edge.NONE -> {
+                                        edge = hit.edge
+                                        clipId = hit.clip.id
+                                        clipStart = hit.clip.startNs
+                                        clipEnd = hit.clip.endNs
+                                        Gesture.TRIM_CLIP
+                                    }
+                                    else -> {
+                                        clipId = hit.clip.id
+                                        clipStart = hit.clip.startNs
+                                        clipEnd = hit.clip.endNs
+                                        Gesture.MOVE_CLIP
+                                    }
+                                }
+                                last = change.position
+                                change.consume()
+                                continue
+                            }
+
+                            moved = true
+                            when (gesture) {
+                                Gesture.SCROLL -> {
+                                    scrollPx = (scrollPx - delta.x).coerceAtLeast(0f)
+                                    change.consume()
+                                }
+                                Gesture.PLAYHEAD -> {
+                                    onSeek(timeAt(change.position.x, pixelsPerSecond, scrollPx, metrics))
+                                    change.consume()
+                                }
+                                Gesture.MOVE_CLIP -> {
+                                    val deltaNs =
+                                        (delta.x / pixelsPerSecond * 1e9).roundToLong()
+                                    val start = (clipStart + deltaNs).coerceAtLeast(0L)
+                                    clipStart = start
+                                    onMoveClip(clipId, start)
+                                    change.consume()
+                                }
+                                Gesture.TRIM_CLIP -> {
+                                    val deltaNs =
+                                        (delta.x / pixelsPerSecond * 1e9).roundToLong()
+                                    val newStart = if (edge == Edge.START) {
+                                        (clipStart + deltaNs).coerceAtLeast(0L)
+                                    } else {
+                                        clipStart
+                                    }
+                                    val newEnd = if (edge == Edge.END) {
+                                        max(clipEnd + deltaNs, newStart + 1_000_000L)
+                                    } else {
+                                        clipEnd
+                                    }
+                                    clipStart = newStart
+                                    clipEnd = newEnd
+                                    onTrimClip(clipId, newStart, newEnd)
+                                    change.consume()
+                                }
+                                null -> Unit
+                            }
+                            last = change.position
                         }
-                        if (pan.x != 0f) {
-                            val deltaNs = (pan.x / pixelsPerSecond * 1e9).roundToLong()
-                            scrollNs = (scrollNs - deltaNs).coerceAtLeast(0L)
+
+                        if (!moved) {
+                            // A tap: select what was touched.
+                            val hit = hitTest(
+                                project, positionNs, down.position,
+                                pixelsPerSecond, scrollPx, metrics,
+                            )
+                            onSelectClip(hit?.clip?.id)
+                            if (hit != null && hit.isPlayhead) {
+                                onSeek(timeAt(down.position.x, pixelsPerSecond, scrollPx, metrics))
+                            }
                         }
                     }
-                }
-                .pointerInput(project, pixelsPerSecond, scrollNs) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            if (offset.x < headerPx) return@detectTapGestures
-                            val hit = hitTest(project, offset, pixelsPerSecond, scrollNs, metrics)
-                            onSelectClip(hit)
-                        },
-                        onLongPress = { offset ->
-                            if (offset.x < headerPx) return@detectTapGestures
-                            onSelectClip(hitTest(project, offset, pixelsPerSecond, scrollNs, metrics))
-                        },
-                    )
-                }
-                .pointerInput(project, pixelsPerSecond, scrollNs) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            val clip = if (offset.x < headerPx) {
-                                null
-                            } else {
-                                clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)
-                            }
-                            if (clip == null) {
-                                // Dragging the ruler (or empty space) scrubs.
-                                drag = Drag.Idle
-                                onSeek(timeAt(offset.x, pixelsPerSecond, scrollNs, metrics))
-                            } else {
-                                val (trackIndex, model) = clip
-                                val edge =
-                                    edgeAt(model, offset.x, pixelsPerSecond, scrollNs, metrics)
-                                drag = when (edge) {
-                                    Edge.START, Edge.END -> Drag.Trimming(
-                                        model.id, trackIndex, edge,
-                                        model.startNs, model.endNs,
-                                    )
-                                    Edge.NONE ->
-                                        Drag.Moving(model.id, trackIndex, model.startNs)
-                                }
-                            }
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            when (val current = drag) {
-                                Drag.Idle -> {
-                                    // Scrubbing the ruler.
-                                    onSeek(timeAt(change.position.x, pixelsPerSecond, scrollNs, metrics))
-                                }
-                                is Drag.Moving -> {
-                                    val deltaNs = (dragAmount.x / pixelsPerSecond * 1e9).roundToLong()
-                                    val start = (current.startNs + deltaNs).coerceAtLeast(0L)
-                                    drag = current.copy(startNs = start)
-                                    onMoveClip(current.clipId, start)
-                                }
-                                is Drag.Trimming -> {
-                                    val deltaNs = (dragAmount.x / pixelsPerSecond * 1e9).roundToLong()
-                                    val newStart = if (current.edge == Edge.START) {
-                                        (current.startNs + deltaNs).coerceAtLeast(0L)
-                                    } else {
-                                        current.startNs
-                                    }
-                                    val newEnd = if (current.edge == Edge.END) {
-                                        max(current.endNs + deltaNs, newStart + 1_000_000L)
-                                    } else {
-                                        current.endNs
-                                    }
-                                    drag = current.copy(startNs = newStart, endNs = newEnd)
-                                    onTrimClip(current.clipId, newStart, newEnd)
-                                }
-                            }
-                        },
-                        onDragEnd = { drag = Drag.Idle },
-                        onDragCancel = { drag = Drag.Idle },
-                    )
                 },
         ) {
             Canvas(Modifier.fillMaxSize()) {
@@ -205,8 +264,7 @@ fun Timeline(
                     positionNs = positionNs,
                     selectedClipId = selectedClipId,
                     pixelsPerSecond = pixelsPerSecond,
-                    scrollNs = scrollNs,
-                    drag = drag,
+                    scrollPx = scrollPx,
                     measurer = measurer,
                     metrics = metrics,
                 )
@@ -215,52 +273,60 @@ fun Timeline(
     }
 }
 
-/** Which edge of a clip a touch is close to. */
-private enum class Edge { START, END, NONE }
-
 /** The pixel metrics of the timeline, computed once per composition. */
 private class TimelineMetrics(
     val headerPx: Float,
     val rulerPx: Float,
     val trackPx: Float,
     val trimHandlePx: Float,
+    val playheadPx: Float,
 )
 
-/** The clip under a touch, with the index of its track. */
-private fun clipAt(
-    project: ProjectModel,
-    offset: Offset,
-    pixelsPerSecond: Float,
-    scrollNs: Long,
-    metrics: TimelineMetrics,
-): Pair<Int, ClipModel>? {
-    if (offset.x < metrics.headerPx || offset.y < metrics.rulerPx) return null
-    val trackIndex = ((offset.y - metrics.rulerPx) / metrics.trackPx).toInt()
-    val track = project.tracks.getOrNull(trackIndex) ?: return null
-    val timeNs = timeAt(offset.x, pixelsPerSecond, scrollNs, metrics)
-    val clip = track.clips.firstOrNull { timeNs >= it.startNs && timeNs < it.endNs }
-    return clip?.let { trackIndex to it }
-}
+/** What is under a touch. */
+private class Hit(
+    val clip: ClipModel?,
+    val edge: Edge,
+    val isPlayhead: Boolean,
+)
 
-/** The clip under a touch, without the track index. */
+/** The clip under a touch, or the playhead's handle. */
 private fun hitTest(
     project: ProjectModel,
+    positionNs: Long,
     offset: Offset,
     pixelsPerSecond: Float,
-    scrollNs: Long,
+    scrollPx: Float,
     metrics: TimelineMetrics,
-): Int? = clipAt(project, offset, pixelsPerSecond, scrollNs, metrics)?.second?.id
+): Hit? {
+    // The playhead's handle sits in the ruler.
+    if (offset.y < metrics.rulerPx) {
+        val playheadX = timeToX(positionNs, pixelsPerSecond, scrollPx, metrics)
+        val handle = metrics.playheadPx / 2f
+        if (abs(offset.x - playheadX) <= handle) {
+            return Hit(null, Edge.NONE, true)
+        }
+        return null
+    }
+    if (offset.x < metrics.headerPx) return null
+    val trackIndex = ((offset.y - metrics.rulerPx) / metrics.trackPx).toInt()
+    val track = project.tracks.getOrNull(trackIndex) ?: return null
+    val timeNs = timeAt(offset.x, pixelsPerSecond, scrollPx, metrics)
+    val clip = track.clips.firstOrNull { timeNs >= it.startNs && timeNs < it.endNs }
+        ?: return null
+    val edge = edgeAt(clip, offset.x, pixelsPerSecond, scrollPx, metrics)
+    return Hit(clip, edge, false)
+}
 
 /** Which edge of a clip a touch is close to. */
 private fun edgeAt(
     clip: ClipModel,
     x: Float,
     pixelsPerSecond: Float,
-    scrollNs: Long,
+    scrollPx: Float,
     metrics: TimelineMetrics,
 ): Edge {
-    val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs, metrics)
-    val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs, metrics)
+    val startX = timeToX(clip.startNs, pixelsPerSecond, scrollPx, metrics)
+    val endX = timeToX(clip.endNs, pixelsPerSecond, scrollPx, metrics)
     return when {
         abs(x - startX) <= metrics.trimHandlePx -> Edge.START
         abs(x - endX) <= metrics.trimHandlePx -> Edge.END
@@ -272,22 +338,33 @@ private fun edgeAt(
 private fun timeAt(
     x: Float,
     pixelsPerSecond: Float,
-    scrollNs: Long,
+    scrollPx: Float,
     metrics: TimelineMetrics,
 ): Long {
-    val seconds = (x - metrics.headerPx) / pixelsPerSecond
-    return scrollNs + (seconds * 1e9).roundToLong()
+    val seconds = (x - metrics.headerPx + scrollPx) / pixelsPerSecond
+    return (seconds * 1e9).roundToLong()
 }
 
 /** The horizontal position of a time. */
 private fun timeToX(
     timeNs: Long,
     pixelsPerSecond: Float,
-    scrollNs: Long,
+    scrollPx: Float,
     metrics: TimelineMetrics,
 ): Float {
-    val seconds = (timeNs - scrollNs) / 1e9f
-    return metrics.headerPx + seconds * pixelsPerSecond
+    val seconds = (timeNs - scrollPx / pixelsPerSecond * 1e9) / 1e9f
+    return metrics.headerPx + seconds * pixelsPerSecond - scrollPx
+}
+
+/** The scroll that keeps a time under a position. */
+private fun scrollFor(
+    timeNs: Long,
+    pixelsPerSecond: Float,
+    x: Float,
+    metrics: TimelineMetrics,
+): Float {
+    val seconds = timeNs / 1e9f
+    return (seconds * pixelsPerSecond - (x - metrics.headerPx)).coerceAtLeast(0f)
 }
 
 /** Draw the whole timeline. */
@@ -296,12 +373,10 @@ private fun DrawScope.drawTimeline(
     positionNs: Long,
     selectedClipId: Int?,
     pixelsPerSecond: Float,
-    scrollNs: Long,
-    drag: Drag,
+    scrollPx: Float,
     measurer: TextMeasurer,
     metrics: TimelineMetrics,
 ) {
-    // A DrawScope is a Density, so the conversions below use its own density.
     val headerPx = metrics.headerPx
     val rulerPx = metrics.rulerPx
     val trackPx = metrics.trackPx
@@ -318,27 +393,36 @@ private fun DrawScope.drawTimeline(
     )
 
     val step = tickStep(pixelsPerSecond)
-    val firstTick = (scrollNs / step).coerceAtLeast(0L)
+    val firstTick = ((scrollPx / pixelsPerSecond) * 1e9 / step).toLong().coerceAtLeast(0L)
     var tick = firstTick
     // The ruler is bounded, so that a strange zoom can never make it spin.
-    val lastTick = firstTick + 1_000
+    val lastTick = firstTick + 2_000
+    var lastLabelRight = headerPx - 8f
     while (tick <= lastTick) {
         val timeNs = tick * step
-        val x = timeToX(timeNs, pixelsPerSecond, scrollNs, metrics)
+        val x = timeToX(timeNs, pixelsPerSecond, scrollPx, metrics)
         if (x > size.width) break
         if (x >= headerPx) {
             drawLine(
                 VimoColors.Outline,
-                Offset(x, rulerPx - 10f),
+                Offset(x, rulerPx - 9f),
                 Offset(x, rulerPx),
                 strokeWidth = 1f,
             )
+            // The labels never overlap: a label is only drawn when there is
+            // room for it.
             val label = formatTimecode(timeNs, project.fps)
             val measured = measurer.measure(
                 label,
                 TextStyle(fontSize = 10.sp, color = VimoColors.OnSurfaceMuted),
             )
-            drawText(measured, topLeft = Offset(x + 4f, with(density) { 4.dp.toPx() }))
+            if (measured.size.width + 12f < x - lastLabelRight) {
+                drawText(
+                    measured,
+                    topLeft = Offset(x + 4f, with(density) { 4.dp.toPx() }),
+                )
+                lastLabelRight = x + measured.size.width
+            }
         }
         tick += 1
     }
@@ -354,10 +438,9 @@ private fun DrawScope.drawTimeline(
             size = Size(size.width, trackPx),
         )
 
-        // The clips.
         track.clips.forEach { clip ->
-            val startX = timeToX(clip.startNs, pixelsPerSecond, scrollNs, metrics)
-            val endX = timeToX(clip.endNs, pixelsPerSecond, scrollNs, metrics)
+            val startX = timeToX(clip.startNs, pixelsPerSecond, scrollPx, metrics)
+            val endX = timeToX(clip.endNs, pixelsPerSecond, scrollPx, metrics)
             if (endX < headerPx || startX > size.width) return@forEach
 
             val left = max(startX, headerPx)
@@ -445,12 +528,18 @@ private fun DrawScope.drawTimeline(
             track.name,
             TextStyle(fontSize = 12.sp, color = VimoColors.OnSurface, fontWeight = FontWeight.Medium),
         )
-        drawText(name, topLeft = Offset(with(density) { 12.dp.toPx() }, top + with(density) { 10.dp.toPx() }))
+        drawText(
+            name,
+            topLeft = Offset(with(density) { 12.dp.toPx() }, top + with(density) { 12.dp.toPx() }),
+        )
         val kind = measurer.measure(
             if (track.kind == TrackKind.AUDIO) "Audio" else "Video",
             TextStyle(fontSize = 10.sp, color = VimoColors.OnSurfaceMuted),
         )
-        drawText(kind, topLeft = Offset(with(density) { 12.dp.toPx() }, top + with(density) { 28.dp.toPx() }))
+        drawText(
+            kind,
+            topLeft = Offset(with(density) { 12.dp.toPx() }, top + with(density) { 30.dp.toPx() }),
+        )
     }
 
     // The header column, on top of everything.
@@ -467,19 +556,22 @@ private fun DrawScope.drawTimeline(
     )
 
     // --- the playhead ----------------------------------------------------
-    val playheadX = timeToX(positionNs, pixelsPerSecond, scrollNs, metrics)
+    val playheadX = timeToX(positionNs, pixelsPerSecond, scrollPx, metrics)
     if (playheadX in headerPx..size.width) {
         drawLine(
             VimoColors.Accent,
-            Offset(playheadX, 0f),
+            Offset(playheadX, rulerPx),
             Offset(playheadX, size.height),
             strokeWidth = with(density) { 2.dp.toPx() },
         )
-        // The head of the playhead.
+        // The handle: the only part that moves the playhead.
+        val half = with(density) { PlayheadHandleWidth.toPx() } / 2f
         val head = Path().apply {
-            moveTo(playheadX - with(density) { 7.dp.toPx() }, 0f)
-            lineTo(playheadX + with(density) { 7.dp.toPx() }, 0f)
-            lineTo(playheadX, with(density) { 12.dp.toPx() })
+            moveTo(playheadX - half, 0f)
+            lineTo(playheadX + half, 0f)
+            lineTo(playheadX + half, rulerPx * 0.55f)
+            lineTo(playheadX, rulerPx * 0.8f)
+            lineTo(playheadX - half, rulerPx * 0.55f)
             close()
         }
         drawPath(head, VimoColors.Accent)
@@ -489,8 +581,8 @@ private fun DrawScope.drawTimeline(
 /**
  * The tick step of the ruler.
  *
- * The step is chosen so that the labels never collide: the smallest step whose
- * labels are at least 64 pixels apart wins.
+ * The step is chosen so that the labels never collide: the smallest step
+ * whose labels are at least 64 pixels apart wins.
  */
 private fun tickStep(pixelsPerSecond: Float): Long {
     // The steps are in nanoseconds, the unit the project uses.
