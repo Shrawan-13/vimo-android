@@ -92,11 +92,15 @@ class VimoEngine(
      *
      * The surface is given over **once**: the engine owns it from then on and
      * renders into it on its own thread.
+     *
+     * @param width the width of the surface, in pixels.
+     * @param height the height of the surface, in pixels.
+     * @return true when the renderer was started.
      */
-    fun setSurface(surface: Surface) {
+    fun setSurface(surface: Surface, width: Int, height: Int): Boolean {
         val current = handle
-        if (current == 0L) return
-        VimoCore.nativeSetSurface(current, surface)
+        if (current == 0L) return false
+        return VimoCore.nativeSetSurface(current, surface, width, height)
     }
 
     /** Start playback. */

@@ -42,8 +42,18 @@ internal object VimoCore {
     /** The engine statistics: frames, drops, cache hits and cache size. */
     external fun nativeStats(handle: Long): LongArray
 
-    /** Hand the output surface over to the engine. */
-    external fun nativeSetSurface(handle: Long, surface: Any)
+    /**
+     * Hand the output surface over to the engine.
+     *
+     * The renderer is started on its own thread: the GL context belongs to
+     * exactly one thread.
+     */
+    external fun nativeSetSurface(
+        handle: Long,
+        surface: Any,
+        width: Int,
+        height: Int,
+    ): Boolean
 
     /**
      * Load the effect manifest and the shader sources.

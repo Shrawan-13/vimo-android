@@ -50,7 +50,7 @@ fun PreviewPanel(
     onStop: () -> Unit,
     onStep: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    onSurfaceReady: (android.view.Surface) -> Unit = {},
+    onSurfaceReady: (android.view.Surface, Int, Int) -> Unit = { _, _, _ -> },
 ) {
     Column(modifier = modifier) {
         Box(
@@ -68,7 +68,11 @@ fun PreviewPanel(
                     SurfaceView(context).apply {
                         holder.addCallback(object : SurfaceHolder.Callback {
                             override fun surfaceCreated(holder: SurfaceHolder) {
-                                onSurfaceReady(holder.surface)
+                                onSurfaceReady(
+                                    holder.surface,
+                                    holder.surfaceFrame.width(),
+                                    holder.surfaceFrame.height(),
+                                )
                             }
 
                             override fun surfaceChanged(

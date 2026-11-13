@@ -69,9 +69,12 @@ class MainActivity : ComponentActivity() {
                         .background(MaterialTheme.colorScheme.background)
                         .safeDrawingPadding(),
                 ) {
-                    VimoApp(viewModel, onSurfaceReady = { surface ->
-                        viewModel.engine.setSurface(surface)
-                    })
+                    VimoApp(
+                        viewModel,
+                        onSurfaceReady = { surface, width, height ->
+                            viewModel.engine.setSurface(surface, width, height)
+                        },
+                    )
                     SnackbarHost(snackbar, Modifier.fillMaxSize())
                 }
             }
@@ -102,7 +105,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VimoApp(
     viewModel: EditorViewModel,
-    onSurfaceReady: (android.view.Surface) -> Unit,
+    onSurfaceReady: (android.view.Surface, Int, Int) -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<Uri?>(null) }

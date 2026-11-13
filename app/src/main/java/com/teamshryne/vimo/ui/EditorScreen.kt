@@ -60,7 +60,7 @@ import com.teamshryne.vimo.ui.theme.VimoColors
 @Composable
 fun EditorScreen(
     viewModel: EditorViewModel,
-    onSurfaceReady: (android.view.Surface) -> Unit,
+    onSurfaceReady: (android.view.Surface, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
     onBack: () -> Unit = {},
     onImport: () -> Unit = {},
@@ -157,7 +157,7 @@ fun EditorScreen(
 private fun PreviewColumn(
     viewModel: EditorViewModel,
     aspect: Float,
-    onSurfaceReady: (android.view.Surface) -> Unit,
+    onSurfaceReady: (android.view.Surface, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
