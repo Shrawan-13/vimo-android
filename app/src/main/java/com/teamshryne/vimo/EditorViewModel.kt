@@ -176,35 +176,36 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }.getOrDefault(emptyList())
 
-    /** Poll the engine for events. */
+    /**
+     * Poll the engine for events.
+     *
+     * The events are drained on a background thread: the UI thread only ever
+     * sees the values it needs. The project is only re-read when the engine
+     * says that it changed, because reading the snapshot means building the
+     * whole model again.
+     */
     private fun startEventLoop() {
         pollJob = viewModelScope.launch(Dispatchers.Default) {
+            var lastRefresh = 0L
             while (isActive) {
-                var changed = false
+                var projectChanged = false
                 engine.drainEvents { event ->
                     when (event.tag) {
-                        VimoEventTag.POSITION -> {
-                            positionNs = event.a
-                            changed = true
-                        }
-                        VimoEventTag.PLAYBACK_STATE -> {
-                            playing = event.a == 1L
-                            changed = true
-                        }
-                        VimoEventTag.PROJECT_CHANGED -> {
-                            changed = true
-                        }
-                        VimoEventTag.ERROR -> {
-                            error = event.message
-                            changed = true
-                        }
+                        VimoEventTag.POSITION -> positionNs = event.a
+                        VimoEventTag.PLAYBACK_STATE -> playing = event.a == 1L
+                        VimoEventTag.PROJECT_CHANGED -> projectChanged = true
+                        VimoEventTag.ERROR -> error = event.message
                         else -> Unit
                     }
                 }
-                if (changed) {
-                    withContext(Dispatchers.Main) { refresh() }
+                if (projectChanged) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastRefresh >= REFRESH_INTERVAL_MS) {
+                        lastRefresh = now
+                        withContext(Dispatchers.Main) { refresh() }
+                    }
                 }
-                delay(16)
+                delay(POLL_INTERVAL_MS)
             }
         }
     }
@@ -213,7 +214,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun refresh() {
         val json = engine.snapshot()
         project = SnapshotParser.parse(json)
-        dirty = json != lastSnapshot
         lastSnapshot = json
     }
 
@@ -404,5 +404,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
         /** Where the effect manifest lives in the APK's assets. */
         const val MANIFEST_PATH = "vimo/manifests/vimo.effects.json"
+
+        /** How often the engine is asked for its events. */
+        private const val POLL_INTERVAL_MS = 16L
+
+        /** The shortest time between two reads of the project. */
+        private const val REFRESH_INTERVAL_MS = 100L
     }
 }

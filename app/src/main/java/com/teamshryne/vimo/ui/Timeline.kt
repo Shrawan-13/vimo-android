@@ -320,7 +320,9 @@ private fun DrawScope.drawTimeline(
     val step = tickStep(pixelsPerSecond)
     val firstTick = (scrollNs / step).coerceAtLeast(0L)
     var tick = firstTick
-    while (true) {
+    // The ruler is bounded, so that a strange zoom can never make it spin.
+    val lastTick = firstTick + 1_000
+    while (tick <= lastTick) {
         val timeNs = tick * step
         val x = timeToX(timeNs, pixelsPerSecond, scrollNs, metrics)
         if (x > size.width) break
@@ -491,11 +493,15 @@ private fun DrawScope.drawTimeline(
  * labels are at least 64 pixels apart wins.
  */
 private fun tickStep(pixelsPerSecond: Float): Long {
+    // The steps are in nanoseconds, the unit the project uses.
+    val second = 1_000_000_000L
     val steps = longArrayOf(
-        1L / 60, 1L / 30, 1L / 10, 1L / 4, 1L / 2, 1, 2, 5, 10, 15, 30, 60, 300, 600, 1800,
+        second / 60, second / 30, second / 10, second / 4, second / 2,
+        second, 2 * second, 5 * second, 10 * second, 15 * second,
+        30 * second, 60 * second, 300 * second, 600 * second, 1800 * second,
     )
     for (step in steps) {
-        if (step * pixelsPerSecond >= 64f) return step
+        if (step * pixelsPerSecond / second >= 64f) return step
     }
     return steps.last()
 }
