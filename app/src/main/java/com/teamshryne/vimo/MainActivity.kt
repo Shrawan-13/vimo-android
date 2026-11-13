@@ -2,7 +2,6 @@ package com.teamshryne.vimo
 
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult

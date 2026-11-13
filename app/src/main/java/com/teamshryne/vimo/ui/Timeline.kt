@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.distanceTo
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -146,7 +147,8 @@ fun Timeline(
 
                             if (pressed.size >= 2) {
                                 // Two fingers: zoom around the middle of them.
-                                val distance = pressed[0].position.distanceTo(pressed[1].position)
+                                val distance =
+                                    pressed[0].position.distanceTo(pressed[1].position).toFloat()
                                 val center = (pressed[0].position + pressed[1].position) / 2f
                                 if (lastDistance > 1f && distance > 1f) {
                                     val factor = distance / lastDistance
@@ -181,20 +183,22 @@ fun Timeline(
                                     project, positionNs, down.position,
                                     pixelsPerSecond, scrollPx, metrics,
                                 )
+                                val clip = hit?.clip
                                 gesture = when {
                                     hit == null -> Gesture.SCROLL
                                     hit.isPlayhead -> Gesture.PLAYHEAD
+                                    clip == null -> Gesture.SCROLL
                                     hit.edge != Edge.NONE -> {
                                         edge = hit.edge
-                                        clipId = hit.clip.id
-                                        clipStart = hit.clip.startNs
-                                        clipEnd = hit.clip.endNs
+                                        clipId = clip.id
+                                        clipStart = clip.startNs
+                                        clipEnd = clip.endNs
                                         Gesture.TRIM_CLIP
                                     }
                                     else -> {
-                                        clipId = hit.clip.id
-                                        clipStart = hit.clip.startNs
-                                        clipEnd = hit.clip.endNs
+                                        clipId = clip.id
+                                        clipStart = clip.startNs
+                                        clipEnd = clip.endNs
                                         Gesture.MOVE_CLIP
                                     }
                                 }

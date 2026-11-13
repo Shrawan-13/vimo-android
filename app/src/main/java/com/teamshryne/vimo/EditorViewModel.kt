@@ -2,8 +2,8 @@ package com.teamshryne.vimo
 
 import android.app.Application
 import android.content.ContentResolver
+import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.provider.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -495,7 +495,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 engine.execute(
                     VimoCommand.ADD_ASSET,
                     text = target.absolutePath,
-                    floats = floatArrayOf(durationNs / 1e9),
+                    floats = floatArrayOf((durationNs / 1e9).toFloat()),
                 )
                 refresh()
                 message = "Imported $name"
