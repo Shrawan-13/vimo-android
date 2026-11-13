@@ -1,5 +1,6 @@
 package com.teamshryne.vimo.model
 
+import androidx.compose.runtime.Immutable
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -9,6 +10,7 @@ import org.json.JSONObject
  * The engine owns the project; the UI keeps a parsed, read-only view of it so
  * that drawing the timeline never touches the native side.
  */
+@Immutable
 data class ProjectModel(
     val name: String,
     val width: Int,
@@ -28,6 +30,7 @@ data class ProjectModel(
 }
 
 /** A piece of media in the project. */
+@Immutable
 data class AssetModel(
     val id: Int,
     val name: String,
@@ -36,9 +39,15 @@ data class AssetModel(
     val width: Int,
     val height: Int,
     val hasAudio: Boolean,
-)
+    val sourceId: String = "",
+) {
+    /** What the bin shows: the name the core gave, or the file's own name. */
+    val displayName: String
+        get() = name.ifBlank { fileName(sourceId) }.ifBlank { "Media" }
+}
 
 /** A track on the timeline. */
+@Immutable
 data class TrackModel(
     val id: Int,
     val name: String,
@@ -58,6 +67,7 @@ enum class TrackKind {
 }
 
 /** A clip on the timeline. */
+@Immutable
 data class ClipModel(
     val id: Int,
     val asset: Int,
@@ -89,6 +99,19 @@ data class ParamModel(
     val type: String,
     val value: Double,
 )
+
+/**
+ * The name of a file behind a path, without its extension.
+ *
+ * The core names the media after its file, but a project that came from an
+ * older core may carry an empty name; the file the path points at is still
+ * the best thing to show.
+ */
+private fun fileName(path: String): String {
+    val file = path.substringAfterLast('/').substringAfterLast('\\')
+    val stem = file.substringBeforeLast('.', file)
+    return stem.ifBlank { file }
+}
 
 /**
  * Parses the engine's JSON snapshot.
@@ -133,6 +156,7 @@ object SnapshotParser {
                     width = asset.optInt("width", 0),
                     height = asset.optInt("height", 0),
                     hasAudio = asset.optBoolean("hasAudio", false),
+                    sourceId = asset.optString("sourceId", ""),
                 ),
             )
         }

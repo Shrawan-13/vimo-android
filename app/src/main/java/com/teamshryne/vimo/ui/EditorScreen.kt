@@ -141,6 +141,7 @@ fun EditorScreen(
                     project = project,
                     positionNs = viewModel.positionNs,
                     selectedClipId = viewModel.selectedClipId,
+                    playing = viewModel.playing,
                     onSelectClip = viewModel::selectClip,
                     onMoveClip = viewModel::moveClip,
                     onTrimClip = viewModel::trimClip,
@@ -301,7 +302,7 @@ private fun MediaBin(
                     Spacer(Modifier.width(8.dp))
                     Column {
                         Text(
-                            asset.name,
+                            asset.displayName,
                             style = MaterialTheme.typography.bodySmall,
                             color = VimoColors.OnSurface,
                             maxLines = 1,

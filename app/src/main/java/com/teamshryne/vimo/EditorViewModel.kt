@@ -244,6 +244,31 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private var lastSnapshot: String = ""
 
+    /**
+     * Send a command, and tell the user when it did not work.
+     *
+     * @return true when the core accepted the command.
+     */
+    private fun send(
+        tag: Int,
+        a: Long = 0,
+        b: Long = 0,
+        c: Long = 0,
+        text: String? = null,
+        floats: FloatArray? = null,
+    ): Boolean {
+        val status = engine.execute(tag, a, b, c, text, floats)
+        if (status == VimoStatus.OK) return true
+        error = when (status) {
+            VimoStatus.INVALID_ARGUMENT -> "The core refused that edit"
+            VimoStatus.INVALID_HANDLE -> "The engine is not running"
+            VimoStatus.UNSUPPORTED -> "That is not supported yet"
+            else -> "The core could not do that"
+        }
+        Log.w(TAG, "command $tag failed with status $status")
+        return false
+    }
+
     // --- transport ---------------------------------------------------------
 
     /** Start or pause playback. */
@@ -283,20 +308,21 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     /** Move a clip to a new start time. */
     fun moveClip(clipId: Int, newStartNs: Long) {
         // The track is part of the command: a clip that is moved to another
-        // track changes its place in the project.
-        val track = project.tracks.indexOfFirst { it.clips.any { clip -> clip.id == clipId } }
-        if (track < 0) return
-        engine.execute(
+        // track changes its place in the project. The id is the track's place
+        // in the project, not its place in the list the UI shows.
+        val track = project.tracks.firstOrNull { it.clips.any { clip -> clip.id == clipId } }
+        if (track == null) return
+        send(
             VimoCommand.MOVE_CLIP,
             a = clipId.toLong(),
-            b = track.toLong(),
+            b = track.id.toLong(),
             c = newStartNs,
         )
     }
 
     /** Trim a clip. */
     fun trimClip(clipId: Int, newStartNs: Long, newEndNs: Long) {
-        engine.execute(
+        send(
             VimoCommand.TRIM_CLIP,
             a = clipId.toLong(),
             b = newStartNs,
@@ -307,37 +333,62 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     /** Split the selected clip at the playhead. */
     fun splitAtPlayhead() {
         val clip = selectedClip() ?: return
-        engine.execute(VimoCommand.SPLIT_CLIP, a = clip.id.toLong(), b = positionNs)
+        send(VimoCommand.SPLIT_CLIP, a = clip.id.toLong(), b = positionNs)
     }
 
     /**
      * Put a file on the timeline.
      *
-     * It goes on the first video track, at the end of what is already
-     * there.
+     * Sound goes on the audio track, everything else on the video track, and
+     * the clip goes at the end of what is already on that track. If the
+     * project has no track for it, one is made first.
      */
     fun addAssetToTimeline(asset: AssetModel) {
-        val track = project.tracks.indexOfFirst { it.kind == TrackKind.VIDEO }
-        if (track < 0) {
-            error = "There is no video track yet"
+        ensureTracks()
+        val kind = if (asset.kind == "audio") TrackKind.AUDIO else TrackKind.VIDEO
+        val track = project.tracks.firstOrNull { it.kind == kind }
+        if (track == null) {
+            error = "There is no ${if (kind == TrackKind.AUDIO) "audio" else "video"} track yet"
             return
         }
-        val start = project.tracks[track].clips.maxOfOrNull { it.endNs } ?: 0L
-        engine.execute(
-            VimoCommand.ADD_CLIP,
-            a = track.toLong(),
-            b = asset.id.toLong(),
-            c = start,
-        )
+        val start = track.clips.maxOfOrNull { it.endNs } ?: 0L
+        if (!send(
+                VimoCommand.ADD_CLIP,
+                a = track.id.toLong(),
+                b = asset.id.toLong(),
+                c = start,
+            )
+        ) {
+            return
+        }
+        refresh()
+        message = "${asset.displayName} is on the timeline"
+    }
+
+    /**
+     * Make sure there is somewhere to put the media.
+     *
+     * A project that came from an older file can have no tracks at all, in
+     * which case nothing could ever be added to the timeline. The video and
+     * the audio track are made, and nothing else changes.
+     */
+    fun ensureTracks() {
+        val missing = TrackKind.values().filter { kind ->
+            project.tracks.none { it.kind == kind }
+        }
+        if (missing.isEmpty()) return
+        for (kind in missing) {
+            engine.execute(VimoCommand.ADD_TRACK, a = if (kind == TrackKind.AUDIO) 1L else 0L)
+        }
         refresh()
     }
 
     /** Delete the selected clip. */
     fun deleteSelected() {
         val clip = selectedClip() ?: return
-        val track = project.tracks.indexOfFirst { track -> track.clips.any { it.id == clip.id } }
-        if (track < 0) return
-        engine.execute(VimoCommand.REMOVE_CLIP, a = track.toLong(), b = clip.id.toLong())
+        val track = project.tracks.firstOrNull { track -> track.clips.any { it.id == clip.id } }
+        if (track == null) return
+        send(VimoCommand.REMOVE_CLIP, a = track.id.toLong(), b = clip.id.toLong())
         selectedClipId = null
     }
 
@@ -426,6 +477,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         engine.newProject()
         engine.execute(VimoCommand.SET_PROJECT_NAME, text = name)
         refresh()
+        ensureTracks()
         saveProject()
         refreshProjects()
     }
@@ -434,6 +486,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun openProject(project: ProjectInfo) {
         engine.loadProject(project.path)
         refresh()
+        ensureTracks()
     }
 
     /** Delete a project. */
@@ -477,10 +530,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun importMedia(uri: Uri) {
         val app = getApplication<Application>()
         val resolver = app.contentResolver
-        val name = queryName(resolver, uri) ?: "media"
-        val durationNs = queryDuration(resolver, uri)
-        val target = File(mediaDir, name)
+        // The name and the metadata come from the file, which is on disk.
         viewModelScope.launch(Dispatchers.IO) {
+            val name = queryName(resolver, uri) ?: "media"
+            val info = queryInfo(resolver, uri)
+            val target = File(mediaDir, name)
             try {
                 resolver.openInputStream(uri)?.use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
@@ -492,16 +546,29 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
             withContext(Dispatchers.Main) {
-                engine.execute(
+                send(
                     VimoCommand.ADD_ASSET,
                     text = target.absolutePath,
-                    floats = floatArrayOf((durationNs / 1e9).toFloat()),
+                    floats = floatArrayOf(
+                        (info.durationNs / 1e9).toFloat(),
+                        info.width.toFloat(),
+                        info.height.toFloat(),
+                        if (info.hasAudio) 1f else 0f,
+                    ),
                 )
                 refresh()
                 message = "Imported $name"
             }
         }
     }
+
+    /** What the platform knows about the file behind a content URI. */
+    private data class MediaInfo(
+        val durationNs: Long,
+        val width: Int,
+        val height: Int,
+        val hasAudio: Boolean,
+    )
 
     /** The name of the file behind a content URI. */
     private fun queryName(resolver: ContentResolver, uri: Uri): String? =
@@ -511,26 +578,35 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
             }
 
-    /** How long the media behind a content URI is, in nanoseconds. */
-    private fun queryDuration(resolver: ContentResolver, uri: Uri): Long = try {
+    /** How long, how big and how loud the media behind a content URI is. */
+    private fun queryInfo(resolver: ContentResolver, uri: Uri): MediaInfo = try {
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(resolver.openFileDescriptor(uri, "r")!!.fileDescriptor)
             val millis = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: 0L
-            millis * 1_000_000L
+            val width = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull() ?: 0
+            val height = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+            val hasAudio = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) != "no"
+            MediaInfo(millis * 1_000_000L, width, height, hasAudio)
         } finally {
             retriever.release()
         }
     } catch (_: Exception) {
-        0L
+        MediaInfo(0L, 0, 0, true)
     }
 
     /** Load a project. */
     fun loadProject(path: String) {
         engine.loadProject(path)
         refresh()
+        ensureTracks()
         message = "Loaded"
     }
 

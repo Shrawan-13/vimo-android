@@ -55,10 +55,12 @@ class MainActivity : ComponentActivity() {
             VimoTheme {
                 val snackbar = remember { SnackbarHostState() }
                 val message = viewModel.message
+                val error = viewModel.error
 
-                LaunchedEffect(message) {
-                    if (message != null) {
-                        snackbar.showSnackbar(message)
+                LaunchedEffect(message, error) {
+                    val text = message ?: error
+                    if (text != null) {
+                        snackbar.showSnackbar(text)
                         viewModel.clearMessage()
                     }
                 }
