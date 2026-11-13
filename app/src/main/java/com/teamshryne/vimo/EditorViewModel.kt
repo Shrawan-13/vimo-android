@@ -193,7 +193,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     when (event.tag) {
                         VimoEventTag.POSITION -> positionNs = event.a
                         VimoEventTag.PLAYBACK_STATE -> playing = event.a == 1L
-                        VimoEventTag.PROJECT_CHANGED -> projectChanged = true
+                        VimoEventTag.PROJECT_CHANGED -> {
+                            projectChanged = true
+                            dirty = true
+                        }
                         VimoEventTag.ERROR -> error = event.message
                         else -> Unit
                     }
